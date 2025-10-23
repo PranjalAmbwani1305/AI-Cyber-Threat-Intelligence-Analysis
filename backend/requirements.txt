@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-scikit-learn
-spacy
-transformers
-pandas
-numpy
