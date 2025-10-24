@@ -1,0 +1,9 @@
+streamlit
+transformers
+torch
+scikit-learn
+bertopic
+networkx
+pyvis
+numpy
+pandas
