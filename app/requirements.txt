@@ -11,3 +11,4 @@ pymupdf
 nltk
 gradio
 PyPDF2
+igraph
