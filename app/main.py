@@ -2,7 +2,7 @@ import streamlit as st
 from NER_Transformer import extract_entities_from_uploaded_file
 from Clustering_Prototype import cluster_documents
 from Topic_Modelling_Sentence_Analysis import extract_topics
-from Text_classification_+_Sentiment import analyze_sentiment
+from Text_classification_Sentiment import analyze_sentiment
 from Knowledge_graph_gradio_app import build_graph, visualize_graph
 
 st.set_page_config(page_title="Project ATHENA - CTI Workbench", layout="wide")
