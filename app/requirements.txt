@@ -1,3 +1,4 @@
+matplotlib.pyplot 
 streamlit
 transformers
 torch
@@ -11,4 +12,5 @@ pymupdf
 nltk
 gradio
 PyPDF2
+
 igraph
