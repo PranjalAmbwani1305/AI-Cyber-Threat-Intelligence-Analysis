@@ -10,3 +10,4 @@ pandas
 pymupdf
 nltk
 gradio
+PyPDF2
