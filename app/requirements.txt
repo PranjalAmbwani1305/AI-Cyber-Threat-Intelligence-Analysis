@@ -8,3 +8,4 @@ pyvis
 numpy
 pandas
 pymupdf
+nltk
