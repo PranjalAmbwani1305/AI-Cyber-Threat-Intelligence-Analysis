@@ -7,3 +7,4 @@ networkx
 pyvis
 numpy
 pandas
+pymupdf
