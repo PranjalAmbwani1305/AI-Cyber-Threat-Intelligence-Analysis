@@ -10,9 +10,7 @@ from Knowledge_graph_gradio_app import build_graph, visualize_graph
 st.set_page_config(page_title="Project ATHENA - CTI Workbench", layout="wide")
 st.title("Project ATHENA - Cyber Threat Intelligence Workbench")
 
-# -----------------------------
-# Sidebar
-# -----------------------------
+# --------------Sidebar-------------# 
 st.sidebar.header("Upload Data")
 uploaded_cti = st.sidebar.file_uploader("Upload CTI Reports (.txt/.pdf)", type=["txt", "pdf"])
 uploaded_logs = st.sidebar.file_uploader("Upload Network Logs (.csv/.json)", type=["csv", "json"])
@@ -27,9 +25,8 @@ analyses = st.sidebar.multiselect(
 st.sidebar.header("AI Analyst Assistant (optional)")
 ai_query = st.sidebar.text_input("Ask AI:")
 
-# -----------------------------
-# Run Analysis
-# -----------------------------
+# --------------Run Analysis------------# 
+
 if st.sidebar.button("Run Analysis"):
     text_data = ""
     if uploaded_cti:
@@ -50,9 +47,9 @@ if st.sidebar.button("Run Analysis"):
     # 5. Knowledge Graph
     graph_data = build_graph(entities) if "Knowledge Graph" in analyses else None
 
-    # -----------------------------
-    # Display Results in Tabs
-    # -----------------------------
+    # -------------- Display Results in Tabs---------------#
+   
+    
     tabs = st.tabs(["Knowledge Graph", "Dashboard", "Entity Overview", "AI Assistant"])
 
     # Knowledge Graph Tab
