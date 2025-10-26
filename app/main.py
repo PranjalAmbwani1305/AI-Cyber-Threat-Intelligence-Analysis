@@ -1,10 +1,10 @@
 import streamlit as st
 from nlp_logic import process_cti_pdf, visualize_subgraph, perform_clustering, plot_clusters
 
-st.set_page_config(page_title="Project ATHENA - CTI Workbench", layout="wide")
-st.title("🧠 Project ATHENA - Cyber Threat Intelligence Workbench")
+st.set_page_config(page_title="CTI Workbench", layout="wide")
+st.title("Cyber Threat Intelligence Workbench")
 
-uploaded_file = st.file_uploader("📄 Upload a CTI Report (PDF)", type=["pdf"])
+uploaded_file = st.file_uploader(" Upload a  Report (PDF)", type=["pdf"])
 
 if uploaded_file:
     st.info("Processing uploaded report... this may take a moment.")
@@ -36,4 +36,4 @@ if uploaded_file:
             fig = plot_clusters(embeddings, labels, topics)
             st.pyplot(fig)
 else:
-    st.write("👆 Upload a PDF CTI report to begin analysis.")
+    st.write("Upload a PDF CTI report to begin analysis.")
