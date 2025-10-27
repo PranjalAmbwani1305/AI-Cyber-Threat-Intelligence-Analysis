@@ -1,5 +1,6 @@
 import streamlit as st
-from nlp_logic import process_cti_pdf, visualize_subgraph, perform_clustering, plot_clusters
+from nlp_logic import process_cti_file, visualize_subgraph, perform_clustering, plot_clusters
+
 
 st.set_page_config(page_title="CTI Workbench", layout="wide")
 st.title("Cyber Threat Intelligence Workbench")
