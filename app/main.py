@@ -10,10 +10,19 @@ import json
 from datetime import datetime
 import warnings
 import io
+import spacy
+from spacy import displacy
+import streamlit.components.v1 as components
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    st.error("SpaCy model 'en_core_web_sm' failed to load. Linguistic analysis will be disabled.")
+    nlp = None
 
 NER_MODEL_LOADED = True
 
@@ -57,18 +66,20 @@ def build_cti_knowledge_graph_igraph(df_entities):
         return ig.Graph(directed=True)
 
     vertex_names = df_entities['Entity'].tolist()
-    name_to_label = dict(zip(df_entities['Entity'], df_entities['Type']))
+    labels = df_entities['Type'].tolist()
+    name_to_original_label = dict(zip(vertex_names, labels))
     
     G = ig.Graph(directed=True)
     G.add_vertices(len(vertex_names))
     G.vs["name"] = vertex_names
-    G.vs["node_type"] = [name_to_label[name] for name in G.vs["name"]]
+    G.vs["node_type"] = [name_to_original_label[name] for name in G.vs["name"]]
     G.vs["label"] = G.vs["name"]
     
     color_map = {
         'THREAT_ACTOR': '#FF5733', 'MALWARE': '#33FF57', 'RANSOMWARE': '#3357FF', 
         'IP': '#FF33A1', 'VULID': '#33FFF6', 'ACT': '#FFD133', 'IDTY': '#8D33FF', 
-        'FILE': '#FF8D33', 'DOMAIN': '#33FFA1'
+        'FILE': '#FF8D33', 'DOMAIN': '#33FFA1', 'TOOL': '#00BFFF', 'MISC': '#CCCCCC',
+        'CVE': '#33FFF6', 'OS': '#cab2d6'
     }
     G.vs["color"] = [color_map.get(lab, '#CCCCCC') for lab in G.vs["node_type"]]
     
@@ -76,18 +87,27 @@ def build_cti_knowledge_graph_igraph(df_entities):
     edge_relations = []
     
     for i in range(len(vertex_names) - 1):
-        e1 = vertex_names[i]
-        e2 = vertex_names[i+1]
-        relation = "related_to" 
+        e1, l1 = vertex_names[i], labels[i]
+        e2, l2 = vertex_names[i+1], labels[i+1]
         
         try:
             id1 = G.vs.find(name=e1).index
             id2 = G.vs.find(name=e2).index
-            edges_to_add.append((id1, id2))
-            edge_relations.append(relation)
         except:
             continue
+
+        relation = "related_to"
         
+        if l1 == "THREAT_ACTOR" and l2 == "MALWARE": relation = "uses_malware"
+        elif l1 == "THREAT_ACTOR" and l2 == "RANSOMWARE": relation = "uses_ransomware"
+        elif l1 in ["MALWARE", "RANSOMWARE"] and l2 in ["IP", "DOMAIN"]: relation = "connects_to"
+        elif l1 == "ACT" and l2 in ["MALWARE", "RANSOMWARE"]: relation = "delivers"
+        elif l1 == "ACT" and l2 == "THREAT_ACTOR": relation = "attributed_to"
+        elif l1 in ["VULID", "CVE"] and l2 == "ACT": relation = "exploited_by"
+        
+        edges_to_add.append((id1, id2))
+        edge_relations.append(relation)
+
     G.add_edges(edges_to_add)
     G.es["label"] = edge_relations
     return G
@@ -127,7 +147,7 @@ def perform_log_structural_analysis(df):
 
         analysis_results.append({
             'Log Field': analytic,
-            'Present in File': '✅ Yes' if found_match else '❌ No',
+            'Present in File': 'Yes' if found_match else 'No',
             'Completeness': completeness,
             'Unique Count': unique_values,
             'Sample Values / Top 3': top_values_str
@@ -228,7 +248,7 @@ def query_entity_graph_igraph(G, entity_name):
             vertex_color=subgraph.vs["color"],
             edge_label=subgraph.es["label"],
             edge_color="gray",
-            vertex_size=25,
+            vertex_size=30,
             bbox=(800, 600))
             
         ax.set_title(f"1-Hop Knowledge Graph: {clean_name}", fontsize=14)
@@ -258,6 +278,19 @@ def build_mitre_mapping(df_entities):
             
     return pd.DataFrame(mitre_data).drop_duplicates()
 
+def linguistic_analysis_spacy(text):
+    if nlp is None:
+        return [], "<p>SpaCy model not loaded.</p>"
+    if not text.strip():
+        return [], "<p>Please enter text for analysis.</p>"
+        
+    doc = nlp(text)
+    pos_tags = [(t.text, t.pos_, t.dep_) for t in doc]
+    
+    html = displacy.render(doc, style="dep", page=True)
+    
+    return pos_tags, html
+
 st.set_page_config(
     page_title="CTI Report Deconstruction",
     page_icon="🔎",
@@ -272,9 +305,10 @@ if 'processed' not in st.session_state:
     st.session_state.graph = None
     st.session_state.processing_time = 0.0
     st.session_state.input_mode = "Unstructured (PDF)"
+    st.session_state.dependency_html = ""
 
 with st.sidebar:
-    st.header("1️⃣ Data Ingestion")
+    st.header("1 Data Ingestion")
     
     input_mode = st.radio(
         "Select Input Mode:",
@@ -296,7 +330,7 @@ with st.sidebar:
         help=upload_help
     )
     
-    process_button = st.button("🚀 RUN FULL ANALYSIS PIPELINE", type="primary")
+    process_button = st.button("RUN FULL ANALYSIS PIPELINE", type="primary")
 
     if process_button:
         if uploaded_file is not None:
@@ -323,7 +357,7 @@ with st.sidebar:
             st.warning("Please upload a file to start the analysis.")
 
     st.markdown("---")
-    st.header("2️⃣ Output & Export")
+    st.header("2 Output & Export")
     
     if st.session_state.processed and not st.session_state.entity_df.empty:
         export_data = {
@@ -333,42 +367,43 @@ with st.sidebar:
         }
         
         st.download_button(
-            label="📥 EXPORT STIX/JSON REPORT",
+            label="EXPORT STIX/JSON REPORT",
             data=json.dumps(export_data, indent=2),
             file_name=f"CTI_Report_Export_{datetime.now().strftime('%Y%m%d')}.json",
             mime="application/json",
             type="secondary"
         )
         st.download_button(
-            label="⬇️ Download Entities (CSV)",
+            label="Download Entities (CSV)",
             data=st.session_state.entity_df.to_csv(index=False).encode('utf-8'),
             file_name='extracted_cti_entities.csv',
             mime='text/csv',
             help="Download the filtered entity list."
         )
     else:
-        st.button("📥 EXPORT STIX/JSON REPORT", disabled=True, type="secondary")
+        st.button("EXPORT STIX/JSON REPORT", disabled=True, type="secondary")
         st.caption("Please run analysis pipeline first.")
 
-
-st.title("🔎 CTI Report Deconstruction: AI-Powered Threat Graph Generator")
+st.title("CTI Report Deconstruction: AI-Powered Threat Graph Generator")
 st.markdown("Automate the extraction and mapping of TTPs, Indicators, and Threat Actors from unstructured CTI reports and structured security logs.")
 
 entity_count = len(st.session_state.entity_df)
 event_count = st.session_state.structural_df.loc[st.session_state.structural_df['Log Field'] == 'Total Event Count', 'Present in File'].iloc[0] if not st.session_state.structural_df.empty and 'Total Event Count' in st.session_state.structural_df['Log Field'].values else "---"
 
+st.markdown("---")
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric(label="Total Unique CTI Entities", value=entity_count)
+    st.info(f"**Total Unique CTI Entities**\n# {entity_count}")
 with col2:
-    st.metric(label="Total Events Analyzed (Structural)", value=event_count)
+    st.info(f"**Total Events Analyzed**\n# {event_count}")
 with col3:
-    st.metric(label="Processing Time (s)", value=f"~{st.session_state.processing_time:.1f}s" if st.session_state.processed else "---")
+    st.info(f"**Processing Time (s)**\n# {f'~{st.session_state.processing_time:.1f}s' if st.session_state.processed else '---'}")
+st.markdown("---")
 
 tab_graph, tab_structural, tab_sentiment = st.tabs([
-    "🌐 Knowledge Graph & Entities", 
-    "📈 Log Structural Analysis",
-    "💬 Quick Text Utility"
+    "Knowledge Graph & Entities", 
+    "Log Structural Analysis",
+    "Quick Text Utility"
 ])
 
 with tab_graph:
@@ -384,15 +419,17 @@ with tab_graph:
             hide_index=True
         )
 
-        st.markdown("---")
+        st.divider()
+
         st.subheader("2. MITRE ATT&CK Mapping & Classification")
         st.markdown("Automatically associate extracted Actions and TTPs with standard MITRE Technique IDs.")
         
         st.dataframe(build_mitre_mapping(st.session_state.entity_df), use_container_width=True, hide_index=True)
 
+        st.divider()
 
-        st.markdown("---")
         st.subheader("3. Interactive 1-Hop Knowledge Graph")
+        st.markdown("Pivot on any extracted entity to visualize its immediate network of connections.")
         
         col_select, col_query = st.columns([3, 1])
         with col_select:
@@ -404,10 +441,10 @@ with tab_graph:
             )
 
         with col_query:
-            st.markdown("<br>", unsafe_allow_html=True) 
-            graph_query_button = st.button("Generate Subgraph", key="query_graph")
+            st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True) 
+            graph_query_button = st.button("Generate Subgraph", key="query_graph", use_container_width=True)
 
-        if graph_query_button or selected_entity:
+        if graph_query_button or (selected_entity and st.session_state.processed):
             try:
                 fig, status_msg = query_entity_graph_igraph(st.session_state.graph, selected_entity)
                 if fig:
@@ -417,11 +454,11 @@ with tab_graph:
                 st.error(f"Error generating graph: {e}")
 
 with tab_structural:
-    st.subheader("Log File Schema and Completeness Triage")
-    st.markdown("Analyze log files (CSV, XLSX) to quickly assess data quality, field presence, and completeness before deeper analysis.")
+    st.header("Log File Schema and Completeness Triage")
+    st.markdown("Analyze log files (CSV, XLSX) to quickly assess **data quality**, **field presence**, and **completeness** before deeper analysis.")
 
     if st.session_state.input_mode == "Unstructured (PDF)":
-        st.warning("Structural Analysis is only available for Structured Inputs (CSV/XLSX/LOG). Please switch the Input Mode in the sidebar.")
+        st.warning("Structural Analysis is only available for **Structured Inputs** (CSV/XLSX/LOG). Please switch the Input Mode in the sidebar and run the analysis.")
     elif not st.session_state.processed:
         st.info("Upload a structured log file (CSV, XLSX, or LOG) in the sidebar and run the analysis to populate this tab.")
     else:
@@ -432,7 +469,8 @@ with tab_structural:
         )
 
 with tab_sentiment:
-    st.subheader("Quick Text Utility: Classification and Syntax")
+    st.header("Quick Text Utility: Security Classification and Syntax")
+    st.markdown("Instantly classify the security nature and sentiment of a single text snippet.")
     
     quick_input = st.text_area(
         "Enter text for immediate analysis", 
@@ -445,6 +483,11 @@ with tab_sentiment:
             sentiment_df = pd.DataFrame([{"Label": "NEGATIVE", "Score": 0.98}])
             cti_df = pd.DataFrame([{"Label": "Ransomware"}, {"Label": "Vulnerability"}])
             
+            pos_tags, dep_html = linguistic_analysis_spacy(quick_input)
+            st.session_state.dependency_html = dep_html
+            
+            st.divider()
+
             col_senti, col_cti = st.columns(2)
             with col_senti:
                 st.subheader("Sentiment Polarity")
@@ -453,13 +496,14 @@ with tab_sentiment:
                 st.subheader("CTI Classification (Security Focus)")
                 st.dataframe(cti_df, use_container_width=True, hide_index=True)
 
-            st.markdown("---")
-            with st.expander("📝 Linguistic Analysis: POS Tagging & Dependency"):
-                st.dataframe(pd.DataFrame([
-                    ('The', 'DET', 'det'), ('ransomware', 'NOUN', 'nsubj'), 
-                    ('was', 'AUX', 'auxpass'), ('discovered', 'VERB', 'ROOT')
-                ], columns=['Token', 'POS Tag', 'Dependency']), use_container_width=True)
+            st.divider()
+            with st.expander("Linguistic Analysis: POS Tagging & Dependency"):
+                st.markdown("#### Part-of-Speech (POS) Tagging and Dependency")
+                st.dataframe(pd.DataFrame(pos_tags, columns=['Token', 'POS Tag', 'Dependency']), use_container_width=True)
                 
-                st.info("Dependency Tree Visualization would be embedded here (via spaCy HTML).")
+                st.markdown("#### Dependency Tree Visualization")
+                components.html(st.session_state.dependency_html, height=300)
+
+                st.caption("Dependency Tree Visualization using spaCy.")
         else:
             st.warning("Please enter text for quick analysis.")
