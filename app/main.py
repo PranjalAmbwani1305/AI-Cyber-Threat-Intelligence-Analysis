@@ -18,14 +18,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    # UPDATED: Provide a helpful message to the user for fixing the missing model
-    st.error("SpaCy model 'en_core_web_sm' failed to load. Linguistic analysis will be disabled.")
-    st.warning("To enable linguistic analysis, you must install the required SpaCy model by running the following command in your terminal:")
-    st.code("python -m spacy download en_core_web_sm")
-    nlp = None
 
 NER_MODEL_LOADED = True
 
