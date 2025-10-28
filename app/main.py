@@ -3,14 +3,17 @@ import pandas as pd
 import numpy as np
 import igraph as ig
 import matplotlib.pyplot as plt
-import io
-import warnings
-import json
 import time
 import re
+import os
+import json
+from datetime import datetime
+import warnings
+import io
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 NER_MODEL_LOADED = True
 
@@ -34,35 +37,6 @@ def extract_pdf_text_robust(pdf_file):
     mock_long_text = "The initial access was confirmed as spear phishing. APT-29 utilized this tactic to deliver the TrickBot malware. The malware subsequently connected to a command and control server at 192.168.1.1. The campaign closely resembles activity associated with LockBit ransomware operations. We found evidence of a vulnerability, CVE-2024-4228, being exploited. Further analysis is required on the QakBot loader used in the secondary stage." * 5
     return mock_long_text
 
-def process_structured_data(file_object):
-    start_time = time.time()
-    
-    try:
-        df = pd.read_csv(file_object)
-    except Exception as e:
-        raise ValueError(f"Error reading structured file: {e}")
-
-    text_columns = [col for col in df.columns if re.search(r'message|description|details|event', col, re.IGNORECASE)]
-    
-    if not text_columns:
-        text_columns = df.columns.tolist() 
-        st.warning(f"No descriptive columns found. Analyzing all {len(text_columns)} columns for entities.")
-
-    df['combined_text'] = df[text_columns].astype(str).agg(' '.join, axis=1)
-    
-    full_text = '\n'.join(df['combined_text'].tolist())
-    
-    chunks = chunk_text_robust(full_text)
-    results = [r for chunk in chunks for r in mock_ner_pipeline(chunk)]
-    df_results = pd.DataFrame(results)
-    
-    df_cleaned = clean_and_normalize_entities(df_results)
-    G = build_cti_knowledge_graph_igraph(df_cleaned)
-    
-    end_time = time.time()
-    
-    return df_cleaned, G, (end_time - start_time)
-
 def chunk_text_robust(text, max_length=512, overlap=50):
     return [text[:max_length * 2] + "..."]
 
@@ -71,16 +45,11 @@ def clean_and_normalize_entities(df):
         return df
         
     df = df.copy()
-
     df['word'] = df['word'].astype(str).str.replace('\n', ' ').str.strip()
-    
     df['word'] = df['word'].str.replace('APT-', 'APT', regex=False).str.replace('CVE-', 'CVE', regex=False)
-    
     df_cleaned = df.loc[df.groupby('word')['score'].idxmax()]
-    
     df_cleaned = df_cleaned.rename(columns={'word': 'Entity', 'entity_group': 'Type'})
     df_cleaned['Score'] = df_cleaned['score'].round(4)
-    
     return df_cleaned[['Entity', 'Type', 'Score']]
 
 def build_cti_knowledge_graph_igraph(df_entities):
@@ -97,23 +66,19 @@ def build_cti_knowledge_graph_igraph(df_entities):
     G.vs["label"] = G.vs["name"]
     
     color_map = {
-        'THREAT_ACTOR': '#e31a1c', 'MALWARE': '#33a02c', 'RANSOMWARE': '#a6cee3', 
-        'IP': '#fdbf6f', 'VULID': '#ffff99', 'ACT': '#1f78b4', 'DOMAIN': '#b2df8a', 'IDTY': '#ff7f00', 'FILE': '#fb9a99'
+        'THREAT_ACTOR': '#FF5733', 'MALWARE': '#33FF57', 'RANSOMWARE': '#3357FF', 
+        'IP': '#FF33A1', 'VULID': '#33FFF6', 'ACT': '#FFD133', 'IDTY': '#8D33FF', 
+        'FILE': '#FF8D33', 'DOMAIN': '#33FFA1'
     }
-    G.vs["color"] = [color_map.get(lab, '#a6cee3') for lab in G.vs["node_type"]]
+    G.vs["color"] = [color_map.get(lab, '#CCCCCC') for lab in G.vs["node_type"]]
     
     edges_to_add = []
     edge_relations = []
     
     for i in range(len(vertex_names) - 1):
-        e1, l1 = vertex_names[i], name_to_label[vertex_names[i]]
-        e2, l2 = vertex_names[i+1], name_to_label[vertex_names[i+1]]
-        
-        relation = "related_to"
-        if l1 in ["THREAT_ACTOR", "RANSOMWARE"] and l2 == "MALWARE": relation = "uses"
-        elif l1 in ["MALWARE", "RANSOMWARE"] and l2 in ["IP", "DOMAIN"]: relation = "connects_to"
-        elif l1 == "ACT" and l2 in ["MALWARE", "RANSOMWARE"]: relation = "delivers"
-        elif l1 in ["MALWARE", "RANSOMWARE"] and l2 == "VULID": relation = "exploits"
+        e1 = vertex_names[i]
+        e2 = vertex_names[i+1]
+        relation = "related_to" 
         
         try:
             id1 = G.vs.find(name=e1).index
@@ -126,6 +91,97 @@ def build_cti_knowledge_graph_igraph(df_entities):
     G.add_edges(edges_to_add)
     G.es["label"] = edge_relations
     return G
+
+def perform_log_structural_analysis(df):
+    standard_cols = {
+        'Log Source': ['log_source', 'host', 'system', 'device'],
+        'Event ID': ['event_id', 'id', 'eid'],
+        'Timestamp': ['timestamp', 'time', 'date'],
+        'Username': ['username', 'user', 'uid'],
+        'Source IP': ['source_ip', 'src_ip', 'ip_address'],
+        'Source Port': ['source_port', 'src_port'],
+        'Destination IP': ['destination_ip', 'dest_ip'],
+        'Description/Message': ['description', 'message', 'event_details'],
+        'Type/Category': ['event_type', 'category', 'type']
+    }
+    
+    df_cols = [c.lower() for c in df.columns]
+    analysis_results = []
+    
+    for analytic, keywords in standard_cols.items():
+        found_match = next((col for col in df_cols if col in keywords), None)
+        
+        completeness = "N/A"
+        if found_match:
+            original_col = df.columns[df_cols.index(found_match)]
+            completeness = f"{100 - df[original_col].isnull().sum() / len(df) * 100:.1f}%"
+            unique_values = df[original_col].nunique()
+            if unique_values > 10:
+                top_values = df[original_col].value_counts().head(3).index.tolist()
+                top_values_str = ', '.join(map(str, top_values)) + "..."
+            else:
+                top_values_str = ', '.join(map(str, df[original_col].unique()))
+        else:
+            unique_values = "N/A"
+            top_values_str = "Column Missing"
+
+        analysis_results.append({
+            'Log Field': analytic,
+            'Present in File': '✅ Yes' if found_match else '❌ No',
+            'Completeness': completeness,
+            'Unique Count': unique_values,
+            'Sample Values / Top 3': top_values_str
+        })
+    
+    analysis_results.insert(0, {
+        'Log Field': 'Total Event Count',
+        'Present in File': len(df),
+        'Completeness': '100%',
+        'Unique Count': 'N/A',
+        'Sample Values / Top 3': 'N/A'
+    })
+    
+    return pd.DataFrame(analysis_results)
+
+
+def process_structured_data(file_object):
+    start_time = time.time()
+    
+    filename = file_object.name
+    _, file_extension = os.path.splitext(filename)
+    file_extension = file_extension.lower()
+
+    try:
+        if file_extension in ['.csv', '.log']:
+            df = pd.read_csv(file_object)
+        elif file_extension == '.xlsx':
+            df = pd.read_excel(file_object)
+        else:
+            raise ValueError(f"Unsupported structured file type: {file_extension}. Use CSV, LOG, or XLSX.")
+    except Exception as e:
+        raise ValueError(f"Error reading structured file ({file_extension}): {e}")
+
+    structural_analysis_df = perform_log_structural_analysis(df)
+
+    text_columns = [col for col in df.columns if re.search(r'message|description|details|event', col, re.IGNORECASE)]
+    
+    if not text_columns:
+        text_columns = [col for col in df.columns if df[col].dtype == 'object']
+        
+    df['combined_text'] = df[text_columns].astype(str).agg(' '.join, axis=1)
+    
+    full_text = '\n'.join(df['combined_text'].tolist())
+    
+    chunks = chunk_text_robust(full_text)
+    results = [r for chunk in chunks for r in mock_ner_pipeline(chunk)]
+    df_results = pd.DataFrame(results)
+    
+    df_cleaned = clean_and_normalize_entities(df_results)
+    G = build_cti_knowledge_graph_igraph(df_cleaned)
+    
+    end_time = time.time()
+    
+    return df_cleaned, G, (end_time - start_time), structural_analysis_df
 
 def run_full_pipeline(pdf_file):
     start_time = time.time()
@@ -142,7 +198,13 @@ def run_full_pipeline(pdf_file):
     
     end_time = time.time()
     
-    return df_cleaned, G, (end_time - start_time)
+    empty_structural_df = pd.DataFrame({
+        'Log Field': ['N/A'], 'Present in File': ['N/A'], 
+        'Completeness': ['N/A'], 'Unique Count': ['N/A'], 
+        'Sample Values / Top 3': ['N/A']
+    })
+    
+    return df_cleaned, G, (end_time - start_time), empty_structural_df
 
 def query_entity_graph_igraph(G, entity_name):
     if G is None or entity_name is None:
@@ -195,3 +257,209 @@ def build_mitre_mapping(df_entities):
             mitre_data.append({'Entity': entity, 'MITRE ID': 'TA0001', 'Technique Name': 'Initial Access'})
             
     return pd.DataFrame(mitre_data).drop_duplicates()
+
+st.set_page_config(
+    page_title="CTI Report Deconstruction",
+    page_icon="🔎",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+if 'processed' not in st.session_state:
+    st.session_state.processed = False
+    st.session_state.entity_df = pd.DataFrame()
+    st.session_state.structural_df = pd.DataFrame()
+    st.session_state.graph = None
+    st.session_state.processing_time = 0.0
+    st.session_state.input_mode = "Unstructured (PDF)"
+
+with st.sidebar:
+    st.header("1️⃣ Data Ingestion")
+    
+    input_mode = st.radio(
+        "Select Input Mode:",
+        ["Unstructured (PDF)", "Structured (Log/CSV/XLSX)"],
+        key='input_mode',
+        help="Unstructured is for reports. Structured is for SIEM/log exports."
+    )
+    
+    if st.session_state.input_mode == "Unstructured (PDF)":
+        allowed_types = ["pdf"]
+        upload_help = "Upload a PDF report for entity extraction."
+    else:
+        allowed_types = ["csv", "xlsx", "log"]
+        upload_help = "Upload a CSV, XLSX, or LOG file for structural and CTI analysis."
+
+    uploaded_file = st.file_uploader(
+        f"Upload File ({'PDF' if st.session_state.input_mode == 'Unstructured (PDF)' else 'CSV/XLSX/LOG'})",
+        type=allowed_types,
+        help=upload_help
+    )
+    
+    process_button = st.button("🚀 RUN FULL ANALYSIS PIPELINE", type="primary")
+
+    if process_button:
+        if uploaded_file is not None:
+            try:
+                with st.spinner(f"Running Analysis on {uploaded_file.name}..."):
+                    if st.session_state.input_mode == "Unstructured (PDF)":
+                        df, G, p_time, structural_df = run_full_pipeline(uploaded_file)
+                    else:
+                        df, G, p_time, structural_df = process_structured_data(uploaded_file)
+                        
+                    st.session_state.entity_df = df
+                    st.session_state.structural_df = structural_df
+                    st.session_state.graph = G
+                    st.session_state.processing_time = p_time
+                    st.session_state.processed = True
+                st.success(f"Analysis Complete! {len(df)} unique CTI entities mapped.")
+            except ValueError as e:
+                st.error(f"Processing Error: {e}")
+                st.session_state.processed = False
+            except Exception as e:
+                st.error(f"An unexpected error occurred during processing: {e}")
+                st.session_state.processed = False
+        else:
+            st.warning("Please upload a file to start the analysis.")
+
+    st.markdown("---")
+    st.header("2️⃣ Output & Export")
+    
+    if st.session_state.processed and not st.session_state.entity_df.empty:
+        export_data = {
+            "metadata": {"tool": "CTI Deconstruction Tool", "version": "1.0-Hackathon", "timestamp": datetime.now().isoformat()},
+            "entities": st.session_state.entity_df.to_dict('records'),
+            "mitre_mapping": build_mitre_mapping(st.session_state.entity_df).to_dict('records')
+        }
+        
+        st.download_button(
+            label="📥 EXPORT STIX/JSON REPORT",
+            data=json.dumps(export_data, indent=2),
+            file_name=f"CTI_Report_Export_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            type="secondary"
+        )
+        st.download_button(
+            label="⬇️ Download Entities (CSV)",
+            data=st.session_state.entity_df.to_csv(index=False).encode('utf-8'),
+            file_name='extracted_cti_entities.csv',
+            mime='text/csv',
+            help="Download the filtered entity list."
+        )
+    else:
+        st.button("📥 EXPORT STIX/JSON REPORT", disabled=True, type="secondary")
+        st.caption("Please run analysis pipeline first.")
+
+
+st.title("🔎 CTI Report Deconstruction: AI-Powered Threat Graph Generator")
+st.markdown("Automate the extraction and mapping of TTPs, Indicators, and Threat Actors from unstructured CTI reports and structured security logs.")
+
+entity_count = len(st.session_state.entity_df)
+event_count = st.session_state.structural_df.loc[st.session_state.structural_df['Log Field'] == 'Total Event Count', 'Present in File'].iloc[0] if not st.session_state.structural_df.empty and 'Total Event Count' in st.session_state.structural_df['Log Field'].values else "---"
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric(label="Total Unique CTI Entities", value=entity_count)
+with col2:
+    st.metric(label="Total Events Analyzed (Structural)", value=event_count)
+with col3:
+    st.metric(label="Processing Time (s)", value=f"~{st.session_state.processing_time:.1f}s" if st.session_state.processed else "---")
+
+tab_graph, tab_structural, tab_sentiment = st.tabs([
+    "🌐 Knowledge Graph & Entities", 
+    "📈 Log Structural Analysis",
+    "💬 Quick Text Utility"
+])
+
+with tab_graph:
+    if not st.session_state.processed:
+        st.info("Upload a file in the sidebar and run the analysis pipeline to populate the entities.")
+    else:
+        st.subheader("1. Extracted Threat Entities (IOCs & TTPs)")
+        st.markdown(f"**{entity_count}** unique entities identified and normalized by the pipeline.")
+        
+        st.dataframe(
+            st.session_state.entity_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("---")
+        st.subheader("2. MITRE ATT&CK Mapping & Classification")
+        st.markdown("Automatically associate extracted Actions and TTPs with standard MITRE Technique IDs.")
+        
+        st.dataframe(build_mitre_mapping(st.session_state.entity_df), use_container_width=True, hide_index=True)
+
+
+        st.markdown("---")
+        st.subheader("3. Interactive 1-Hop Knowledge Graph")
+        
+        col_select, col_query = st.columns([3, 1])
+        with col_select:
+            entity_options = st.session_state.entity_df['Entity'].unique().tolist()
+            selected_entity = st.selectbox(
+                "Select Entity to Pivot/Query", 
+                options=entity_options, 
+                index=0 if entity_options else None
+            )
+
+        with col_query:
+            st.markdown("<br>", unsafe_allow_html=True) 
+            graph_query_button = st.button("Generate Subgraph", key="query_graph")
+
+        if graph_query_button or selected_entity:
+            try:
+                fig, status_msg = query_entity_graph_igraph(st.session_state.graph, selected_entity)
+                if fig:
+                    st.pyplot(fig, use_container_width=True)
+                st.caption(f"Graph Status: {status_msg}")
+            except Exception as e:
+                st.error(f"Error generating graph: {e}")
+
+with tab_structural:
+    st.subheader("Log File Schema and Completeness Triage")
+    st.markdown("Analyze log files (CSV, XLSX) to quickly assess data quality, field presence, and completeness before deeper analysis.")
+
+    if st.session_state.input_mode == "Unstructured (PDF)":
+        st.warning("Structural Analysis is only available for Structured Inputs (CSV/XLSX/LOG). Please switch the Input Mode in the sidebar.")
+    elif not st.session_state.processed:
+        st.info("Upload a structured log file (CSV, XLSX, or LOG) in the sidebar and run the analysis to populate this tab.")
+    else:
+        st.dataframe(
+            st.session_state.structural_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+with tab_sentiment:
+    st.subheader("Quick Text Utility: Classification and Syntax")
+    
+    quick_input = st.text_area(
+        "Enter text for immediate analysis", 
+        height=100,
+        placeholder="The newly discovered ransomware strain, 'Hydra', has been successfully exploiting the Microsoft zero-day, CVE-2025-0001."
+    )
+    
+    if st.button("Run Quick Analysis", type="primary"):
+        if quick_input:
+            sentiment_df = pd.DataFrame([{"Label": "NEGATIVE", "Score": 0.98}])
+            cti_df = pd.DataFrame([{"Label": "Ransomware"}, {"Label": "Vulnerability"}])
+            
+            col_senti, col_cti = st.columns(2)
+            with col_senti:
+                st.subheader("Sentiment Polarity")
+                st.dataframe(sentiment_df, use_container_width=True, hide_index=True)
+            with col_cti:
+                st.subheader("CTI Classification (Security Focus)")
+                st.dataframe(cti_df, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            with st.expander("📝 Linguistic Analysis: POS Tagging & Dependency"):
+                st.dataframe(pd.DataFrame([
+                    ('The', 'DET', 'det'), ('ransomware', 'NOUN', 'nsubj'), 
+                    ('was', 'AUX', 'auxpass'), ('discovered', 'VERB', 'ROOT')
+                ], columns=['Token', 'POS Tag', 'Dependency']), use_container_width=True)
+                
+                st.info("Dependency Tree Visualization would be embedded here (via spaCy HTML).")
+        else:
+            st.warning("Please enter text for quick analysis.")
