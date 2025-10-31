@@ -1,17 +1,3 @@
-# main.py
-"""
-Streamlit frontend for CTI analytics using nlp_logic.py.
-Tabs:
- - Overview
- - NER
- - Sentiment & Quick Summary
- - Topics
- - Clustering
- - Knowledge Graph
- - Threat Feed (table)
-No page icon (removed).
-"""
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
