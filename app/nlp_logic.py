@@ -2,7 +2,6 @@ import warnings
 import re
 import nltk
 import pandas as pd
-import matplotlib.pyplot as plt
 import igraph as ig
 from PyPDF2 import PdfReader
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
@@ -17,10 +16,23 @@ MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
 NER_INITIALIZED = False
 EMBEDDING_INITIALIZED = False
 
-# ---------------- LOAD MODELS ----------------
 print("[INFO] Loading models...")
 
-# Load NER model
+# ---------------- FIX NLTK TOKENIZER ----------------
+# Ensures both 'punkt' and new 'punkt_tab' are available
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt", quiet=True)
+
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except LookupError:
+    nltk.download("punkt_tab", quiet=True)
+
+nltk.data.path.append("/tmp/nltk_data")
+
+# ---------------- LOAD MODELS ----------------
 try:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
@@ -35,20 +47,12 @@ try:
 except Exception as e:
     print(f"[ERROR] Failed to load NER model: {e}")
 
-# Load sentence embedding model
 try:
     embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
     EMBEDDING_INITIALIZED = True
     print("[OK] SentenceTransformer loaded successfully.")
 except Exception as e:
     print(f"[ERROR] Failed to load SentenceTransformer: {e}")
-
-# Ensure NLTK tokenizer available
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt", quiet=True, download_dir="/tmp/nltk_data")
-    nltk.data.path.append("/tmp/nltk_data")
 
 # ---------------- UTILITIES ----------------
 def extract_pdf_text(pdf_file):
@@ -64,13 +68,20 @@ def extract_pdf_text(pdf_file):
         print(f"[ERROR] Reading PDF failed: {e}")
     return text.strip()
 
+
 def split_into_sentences(text):
     """Split text into clean sentences."""
     if not text or not isinstance(text, str):
         return []
     clean_text = re.sub(r"\s+", " ", text)
+    for res in ["punkt", "punkt_tab"]:
+        try:
+            nltk.data.find(f"tokenizers/{res}")
+        except LookupError:
+            nltk.download(res, quiet=True)
     sentences = nltk.sent_tokenize(clean_text)
     return [s.strip() for s in sentences if s.strip()]
+
 
 def chunk_text(text, max_length=512, overlap=50):
     """Split text into overlapping token chunks for NER."""
@@ -129,6 +140,7 @@ def build_cti_graph(entities, labels):
     G.es["label"] = relations
     return G
 
+
 # ---------------- CLUSTERING ----------------
 def perform_clustering(sentences):
     """Perform semantic clustering using SentenceTransformer + DBSCAN."""
@@ -144,6 +156,7 @@ def perform_clustering(sentences):
         for cid in set(labels)
     }
     return embeddings, labels, topic_map
+
 
 # ---------------- MAIN PROCESSOR ----------------
 def process_cti_pdf(file_path):
@@ -178,7 +191,6 @@ def process_cti_pdf(file_path):
         df = pd.DataFrame(columns=["Entity", "Type", "Score"])
         G = ig.Graph(directed=True)
 
-    # Optional clustering
     _, cluster_labels, topic_map = perform_clustering(sentences)
 
     print(f"[DONE] Extracted {len(df)} entities, {len(sentences)} sentences.")
@@ -192,7 +204,6 @@ def process_cti_pdf(file_path):
 
 # ---------------- DEMO ----------------
 if __name__ == "__main__":
-    # Example usage: replace with your file path
     pdf_path = "sample_cti_report.pdf"
     result = process_cti_pdf(pdf_path)
 
