@@ -1,92 +1,85 @@
-import spacy
 import pandas as pd
-from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
-from PyPDF2 import PdfReader
+import io
+import nltk
 import networkx as nx
-import matplotlib.pyplot as plt
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.decomposition import LatentDirichletAllocation
-import warnings
+from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
+import streamlit as st
 
-warnings.filterwarnings("ignore")
-
-# ----------------------------------------------------------
-# LOAD MODELS SAFELY
-# ----------------------------------------------------------
+# Ensure sentence tokenizer is available
 try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    from spacy.cli import download
-    download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt")
 
-MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
-ner_pipeline = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+# --- Cached model load for fast startup ---
+@st.cache_resource
+def load_ner_model():
+    MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
+    ner_pipeline = pipeline(
+        "token-classification",
+        model=model,
+        tokenizer=tokenizer,
+        aggregation_strategy="simple"
+    )
+    return ner_pipeline
 
-# ----------------------------------------------------------
-# TEXT EXTRACTION
-# ----------------------------------------------------------
+# --- Text extraction ---
 def extract_text(file):
-    if file.name.endswith(".pdf"):
-        reader = PdfReader(file)
-        text = ""
-        for page in reader.pages:
-            extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        return text
-    elif file.name.endswith(".csv"):
-        df = pd.read_csv(file)
-        text = " ".join(df.astype(str).apply(lambda x: ' '.join(x), axis=1))
-        return text
+    if file.name.endswith(".csv"):
+        try:
+            df = pd.read_csv(file)
+            text = " ".join(df.astype(str).fillna("").values.flatten())
+        except Exception:
+            text = ""
+    elif file.name.endswith(".txt"):
+        text = file.read().decode("utf-8", errors="ignore")
+    elif file.name.endswith(".pdf"):
+        import PyPDF2
+        reader = PyPDF2.PdfReader(file)
+        text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
     else:
-        return ""
+        text = ""
+    return text
 
-# ----------------------------------------------------------
-# NLP ANALYSIS
-# ----------------------------------------------------------
+def split_into_sentences(text):
+    return nltk.sent_tokenize(text)
+
+# --- Entity extraction ---
 def extract_entities(text):
-    results = ner_pipeline(text)
-    df = pd.DataFrame(results)
+    ner_pipeline = load_ner_model()
+    sentences = split_into_sentences(text)
+    entities = []
+    for sent in sentences[:50]:  # limit for speed
+        entities.extend(ner_pipeline(sent))
+    df = pd.DataFrame(entities)
     if not df.empty:
-        df = df.rename(columns={'word': 'Entity', 'entity_group': 'Type'})
-        df['Score'] = df['score'].round(3)
-        df = df[['Entity', 'Type', 'Score']]
+        df = df.rename(columns={"word": "Entity", "entity_group": "Type", "score": "Score"})
+        df["Score"] = df["Score"].round(3)
+        df = df[["Entity", "Type", "Score"]]
     return df
 
-def extract_keywords(text, top_n=10):
-    doc = nlp(text)
-    words = [token.text.lower() for token in doc if token.is_alpha and not token.is_stop]
-    freq = pd.Series(words).value_counts().head(top_n)
-    return freq.reset_index().rename(columns={'index': 'Keyword', 0: 'Frequency'})
-
-def topic_modeling(text, num_topics=3):
-    vectorizer = CountVectorizer(stop_words='english')
-    X = vectorizer.fit_transform([text])
-    lda = LatentDirichletAllocation(n_components=num_topics, random_state=42)
-    lda.fit(X)
-    topics = []
-    for idx, topic in enumerate(lda.components_):
-        top_words = [vectorizer.get_feature_names_out()[i] for i in topic.argsort()[-5:]]
-        topics.append({"Topic": f"Topic {idx+1}", "Keywords": ", ".join(top_words)})
-    return pd.DataFrame(topics)
-
-# ----------------------------------------------------------
-# KNOWLEDGE GRAPH
-# ----------------------------------------------------------
-def build_cti_graph(df):
-    G = nx.DiGraph()
-    for _, row in df.iterrows():
-        G.add_node(row['Entity'], label=row['Type'])
-    for i in range(len(df) - 1):
-        G.add_edge(df.iloc[i]['Entity'], df.iloc[i+1]['Entity'], relation="related_to")
+# --- Knowledge Graph builder ---
+def build_cti_graph(entities, labels):
+    G = nx.Graph()
+    for e, l in zip(entities, labels):
+        G.add_node(e, label=l)
+    for i in range(len(entities) - 1):
+        G.add_edge(entities[i], entities[i + 1])
     return G
 
+# --- Plot graph ---
+import matplotlib.pyplot as plt
 def plot_cti_graph(G):
-    pos = nx.spring_layout(G, k=0.5, seed=42)
     plt.figure(figsize=(10, 8))
-    node_labels = nx.get_node_attributes(G, 'label')
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=1200, font_size=8, font_weight='bold', edge_color='gray')
+    pos = nx.spring_layout(G, k=0.3, seed=42)
+    node_labels = nx.get_node_attributes(G, "label")
+
+    nx.draw_networkx_nodes(G, pos, node_color="#007ACC", alpha=0.8, node_size=900)
+    nx.draw_networkx_labels(G, pos, font_size=8, font_color="white")
+    nx.draw_networkx_edges(G, pos, edge_color="#AAAAAA", width=1.0, alpha=0.6)
+
+    plt.axis("off")
+    plt.title("Cyber Threat Intelligence Knowledge Graph", fontsize=12)
     return plt.gcf()
