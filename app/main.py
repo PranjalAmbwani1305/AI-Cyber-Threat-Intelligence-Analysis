@@ -1,11 +1,3 @@
-# cti_dashboard_final_layout.py
-"""
-Cyber Threat Intelligence Dashboard (Final Layout Version)
-- Adds explanations for each module
-- Fully working Knowledge Graph with selectable columns
-- Clean clustering output with readable sentences
-"""
-
 import streamlit as st
 import pandas as pd
 import re
@@ -37,21 +29,21 @@ run = st.sidebar.button("▶️ Run Analysis")
 def read_csv_data(file):
     """Read uploaded CSV file."""
     df = pd.read_csv(file)
-    st.write("### 📋 Data preview:")
+    st.write("### 📋 Data Preview")
     st.dataframe(df.head())
     st.success(f"✅ Loaded {df.shape[0]} rows and {df.shape[1]} columns.")
     return df
 
 
 def split_sentences(text):
-    """Split long text into sentences."""
+    """Split text into clean sentences."""
     sents = re.split(r"(?<=[.!?])\s+", text.strip())
     return [s.strip() for s in sents if len(s.strip()) > 2]
 
 
 # ---------------- NER ----------------
 def extract_entities(text):
-    """Extract IPs, CVEs, and domains."""
+    """Extract IPs, CVEs, and Domains."""
     ips = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)
     cves = re.findall(r"\bCVE-\d{4}-\d+\b", text)
     domains = re.findall(r"\b[a-zA-Z0-9.-]+\.[a-z]{2,}\b", text)
@@ -59,25 +51,44 @@ def extract_entities(text):
 
 
 # ---------------- Knowledge Graph ----------------
+def suggest_best_columns(df):
+    """Suggest likely source and destination columns."""
+    src_candidates = [c for c in df.columns if any(k in c.lower() for k in ["src", "source", "from", "ip"])]
+    dst_candidates = [c for c in df.columns if any(k in c.lower() for k in ["dst", "dest", "destination", "to", "ip"])]
+
+    src_col = src_candidates[0] if src_candidates else df.columns[0]
+    dst_col = dst_candidates[0] if dst_candidates else (df.columns[1] if len(df.columns) > 1 else df.columns[0])
+    return src_col, dst_col
+
+
 def build_graph(df, src_col, dst_col):
-    """Build Source → Destination graph."""
-    df_pairs = df[[src_col, dst_col]].dropna()
-    df_pairs = df_pairs[df_pairs[src_col].astype(str).str.strip() != ""]
-    df_pairs = df_pairs[df_pairs[dst_col].astype(str).str.strip() != ""]
-    G = nx.DiGraph()
-    for _, row in df_pairs.head(300).iterrows():
-        G.add_edge(str(row[src_col]), str(row[dst_col]))
+    """Build directed graph from two selected columns."""
+    df_pairs = (
+        df[[src_col, dst_col]]
+        .dropna()
+        .astype(str)
+        .query(f"`{src_col}` != '' and `{dst_col}` != ''")
+    )
+    G = nx.from_pandas_edgelist(df_pairs.head(400), source=src_col, target=dst_col, create_using=nx.DiGraph())
     return G
 
 
 def plot_graph(G, src_col, dst_col):
-    """Draw Knowledge Graph."""
+    """Draw a clean knowledge graph."""
     if not G or G.number_of_nodes() == 0:
-        st.warning("No data to visualize.")
+        st.warning("⚠️ No valid connections to visualize.")
         return
+
+    # Limit graph size for clarity
+    max_nodes = 100
+    if G.number_of_nodes() > max_nodes:
+        deg = dict(G.degree())
+        keep = sorted(deg, key=deg.get, reverse=True)[:max_nodes]
+        G = G.subgraph(keep).copy()
+
     plt.figure(figsize=(10, 6))
     pos = nx.spring_layout(G, k=0.7, seed=42)
-    nx.draw_networkx_nodes(G, pos, node_color="#90CAF9", node_size=700, alpha=0.9)
+    nx.draw_networkx_nodes(G, pos, node_color="#64B5F6", node_size=700, alpha=0.9)
     nx.draw_networkx_edges(G, pos, edge_color="#B0BEC5", arrows=True, alpha=0.6)
     nx.draw_networkx_labels(G, pos, font_size=7)
     plt.title(f"Knowledge Graph: {src_col} → {dst_col}", fontsize=13)
@@ -85,9 +96,8 @@ def plot_graph(G, src_col, dst_col):
     plt.close()
 
 
-# ---------------- NLP Helper ----------------
+# ---------------- NLP + Classification ----------------
 def cluster_sentences(sentences):
-    """Cluster sentences using embeddings."""
     if not sentences:
         return {}
     model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -100,7 +110,6 @@ def cluster_sentences(sentences):
 
 
 def topic_model(sentences):
-    """Find major topics in text."""
     vect = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
     X = vect.fit_transform(sentences)
     k = min(5, len(sentences) // 2 or 1)
@@ -116,7 +125,6 @@ def topic_model(sentences):
 
 
 def sentiment_analysis(text):
-    """Simple keyword-based sentiment analysis."""
     neg_kw = ["attack", "breach", "malware", "ransom"]
     pos_kw = ["patched", "resolved", "update"]
     score = 0.5
@@ -144,7 +152,6 @@ CTI_LABELS = {
 
 
 def cti_classify(text):
-    """Classify text into CTI categories."""
     found = [v for k, v in CTI_LABELS.items() if k in text.lower()]
     return list(set(found)) or ["Informational"]
 
@@ -160,7 +167,7 @@ if run:
     # --- NER ---
     if task == "Named Entity Recognition (NER)":
         st.subheader("🔍 Named Entity Recognition (NER)")
-        st.markdown("> Extracts important entities like **IPs, Domains, and CVEs** from the selected text column.")
+        st.markdown("> Extracts key entities such as **IPs, Domains, and CVEs** from the selected text column.")
         col = st.selectbox("Select column for entity extraction", df.columns)
         text = " ".join(df[col].astype(str).tolist())
         entities = extract_entities(text)
@@ -170,24 +177,30 @@ if run:
     # --- Knowledge Graph ---
     elif task == "Knowledge Graph":
         st.subheader("🌐 Knowledge Graph")
-        st.markdown("> Visualizes connections between two columns, such as **Source_IP → Destination_IP**.")
-        src_col = st.selectbox("Select Source Column", df.columns, index=0)
-        dst_col = st.selectbox("Select Destination Column", df.columns, index=min(1, len(df.columns)-1))
+        st.markdown("> Visualizes **connections** between two columns — for example, **Source_IP → Destination_IP**.")
+
+        suggested_src, suggested_dst = suggest_best_columns(df)
+        st.info(f"💡 Suggested Columns → Source: `{suggested_src}`, Destination: `{suggested_dst}`")
+
+        src_col = st.selectbox("Select Source Column", df.columns, index=df.columns.get_loc(suggested_src))
+        dst_col = st.selectbox("Select Destination Column", df.columns, index=df.columns.get_loc(suggested_dst))
+
         if src_col and dst_col:
+            st.write(f"Building graph from **{src_col} → {dst_col}** ...")
             G = build_graph(df, src_col, dst_col)
             if G:
                 st.success(f"✅ Graph created with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
                 plot_graph(G, src_col, dst_col)
             else:
-                st.warning("⚠️ No valid connections found. Try different columns.")
+                st.warning("⚠️ No valid source–destination pairs found. Try other columns.")
 
     # --- Sentence Clustering ---
     elif task == "Sentence Clustering":
         st.subheader("🧩 Sentence Clustering")
         st.markdown("""
-> Groups similar sentences together based on meaning.  
-> Each cluster shows related sentences —  
-> **Cluster -1** means **noise or unclassified data** (sentences that didn't fit well).
+> Groups similar sentences by meaning.  
+> Each cluster represents related messages.  
+> **Cluster -1** means **noise or unclassified sentences** (that didn’t fit well).
 """)
         col = st.selectbox("Select column for clustering", df.columns)
         text = " ".join(df[col].astype(str).tolist())
@@ -207,7 +220,7 @@ if run:
     # --- Topic Modeling ---
     elif task == "Topic Modeling":
         st.subheader("🧠 Topic Modeling")
-        st.markdown("> Identifies key **themes and keywords** across the selected text column.")
+        st.markdown("> Identifies major **themes and top keywords** in the selected text column.")
         col = st.selectbox("Select column for topic modeling", df.columns)
         text = " ".join(df[col].astype(str).tolist())
         sentences = split_sentences(text)
@@ -221,7 +234,7 @@ if run:
     # --- Sentiment Analysis ---
     elif task == "Sentiment Analysis":
         st.subheader("💬 Sentiment Analysis")
-        st.markdown("> Analyzes the overall **tone** of the selected column (e.g., negative for attacks, positive for resolutions).")
+        st.markdown("> Detects the **tone** of text — negative for attacks, positive for resolutions.")
         col = st.selectbox("Select column for sentiment analysis", df.columns)
         text = " ".join(df[col].astype(str).tolist())
         res = sentiment_analysis(text)
@@ -230,7 +243,7 @@ if run:
     # --- CTI Classification ---
     elif task == "CTI Classification":
         st.subheader("🧾 CTI Classification")
-        st.markdown("> Classifies text into common **cyber threat categories** such as Malware, Phishing, Ransomware, etc.")
+        st.markdown("> Labels text into common **cyber threat categories** (Malware, Phishing, Ransomware, etc.)")
         col = st.selectbox("Select column for CTI classification", df.columns)
         text = " ".join(df[col].astype(str).tolist())
         cats = cti_classify(text)
