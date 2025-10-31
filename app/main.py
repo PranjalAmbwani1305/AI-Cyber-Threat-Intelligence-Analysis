@@ -1,175 +1,188 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import pdfplumber
+from io import StringIO
+from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
 import igraph as ig
-from PyPDF2 import PdfReader
-import random
-from nlp_logic import extract_entities, analyze_sentiment, topic_modeling
+import matplotlib.pyplot as plt
+import warnings
 
-# ----------------------------------------
-# PAGE CONFIG
-# ----------------------------------------
-st.set_page_config(
-    page_title="Cyber Threat Intelligence Dashboard",
-    layout="wide"
-)
+# ---------------------------------------------------
+# Suppress Hugging Face warnings
+# ---------------------------------------------------
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
-# ----------------------------------------
-# HELPER FUNCTIONS
-# ----------------------------------------
-def extract_text_from_pdf(file):
-    """Extracts text from a PDF file."""
-    text = ""
+st.set_page_config(page_title="Cyber Threat Intelligence Analyzer", layout="wide")
+
+# ---------------------------------------------------
+# GLOBAL MODEL INITIALIZATION
+# ---------------------------------------------------
+MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
+tokenizer, model, ner_pipeline = None, None, None
+try:
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
+    ner_pipeline = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+except Exception as e:
+    st.error(f"⚠️ Failed to load SecureBERT-NER model: {e}")
+
+# ---------------------------------------------------
+# SAFETY FUNCTIONS
+# ---------------------------------------------------
+def safe_read_csv(file):
+    """Safely read CSV files with error handling."""
     try:
-        reader = PdfReader(file)
-        for page in reader.pages:
-            text += page.extract_text() or ""
+        df = pd.read_csv(file)
+        if df.empty:
+            st.warning("⚠️ Uploaded CSV file is empty.")
+            return None
+        return df
+    except pd.errors.EmptyDataError:
+        st.error("❌ Uploaded CSV file is empty.")
+        return None
+    except pd.errors.ParserError:
+        st.error("❌ CSV format error. Please verify delimiter and structure.")
+        return None
     except Exception as e:
-        st.error(f"Error reading PDF: {e}")
-    return text.strip()
+        st.error(f"❌ Unexpected CSV error: {e}")
+        return None
 
-def build_sample_feed():
-    """Generates sample threat intelligence data."""
-    data = {
-        "Indicator": [f"{random.randint(10,250)}.{random.randint(0,250)}.{random.randint(0,250)}.{random.randint(0,250)}" for _ in range(50)],
-        "Type": random.choices(["Domain", "IP", "Malware", "URL", "CVE"], k=50),
-        "Confidence": [round(random.uniform(0, 100), 1) for _ in range(50)],
-        "Source": random.choices(["Feed A", "Feed B", "Feed C"], k=50)
-    }
-    return pd.DataFrame(data)
 
-def draw_cti_graph():
-    """Creates a simplified cybersecurity relationship graph."""
-    nodes = ["Firewall", "Source IP", "Destination IP", "Protocol", "User", "Alert"]
-    edges = [
-        ("Firewall", "Destination IP", "blocks"),
-        ("Firewall", "Source IP", "monitors"),
-        ("Source IP", "User", "triggers"),
-        ("Destination IP", "Protocol", "uses"),
-        ("Protocol", "Alert", "initiates"),
-        ("User", "Alert", "triggers")
-    ]
+def extract_pdf_text(pdf_file):
+    """Extract text from PDF safely."""
+    try:
+        text = ""
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                content = page.extract_text()
+                if content:
+                    text += content + "\n"
+        if not text.strip():
+            st.warning("⚠️ No text extracted from PDF.")
+        return text
+    except Exception as e:
+        st.error(f"❌ Error reading PDF: {e}")
+        return ""
 
+
+# ---------------------------------------------------
+# NER LOGIC
+# ---------------------------------------------------
+def extract_entities(text):
+    if not ner_pipeline:
+        st.error("NER model not loaded.")
+        return pd.DataFrame()
+    results = ner_pipeline(text)
+    df = pd.DataFrame(results)
+    df = df.rename(columns={'word': 'Entity', 'entity_group': 'Type', 'score': 'Confidence'})
+    df['Confidence'] = df['Confidence'].round(4)
+    return df[['Entity', 'Type', 'Confidence']]
+
+
+# ---------------------------------------------------
+# KNOWLEDGE GRAPH CREATION
+# ---------------------------------------------------
+def build_graph(entities, types):
     G = ig.Graph(directed=True)
-    G.add_vertices(nodes)
-    G.add_edges([(a, b) for a, b, _ in edges])
-    G.es["label"] = [lbl for _, _, lbl in edges]
+    vertices = list(set(entities))
+    G.add_vertices(vertices)
+    G.vs["label"] = vertices
+    G.vs["type"] = types[:len(vertices)]
 
-    layout = G.layout("tree")
+    # Random simple relation
+    for i in range(len(vertices) - 1):
+        G.add_edges([(vertices[i], vertices[i + 1])])
+    return G
+
+
+def plot_graph(G):
+    layout = G.layout("fr")
     fig, ax = plt.subplots(figsize=(8, 6))
-    ig.plot(
-        G, target=ax, layout=layout,
-        vertex_label=G.vs["name"], vertex_color="#90caf9",
-        vertex_size=35, edge_label=G.es["label"]
-    )
-    return fig
-
-# ----------------------------------------
-# SIDEBAR CONTROLS
-# ----------------------------------------
-st.sidebar.title("⚙️ Upload Your Data")
-uploaded_file = st.sidebar.file_uploader("Upload CTI Report (.pdf or .csv)", type=["csv", "pdf"])
-use_sample = st.sidebar.checkbox("Use Sample Data")
-
-# ----------------------------------------
-# MAIN TABS
-# ----------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🧠 NLP Analysis", "🌐 Knowledge Graph", "🚨 Threat Feed"])
-
-# ----------------------------------------
-# TAB 1: OVERVIEW
-# ----------------------------------------
-with tab1:
-    st.title("📊 Cyber Threat Intelligence Overview")
-    if uploaded_file or use_sample:
-        if use_sample:
-            df = build_sample_feed()
-        elif uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            text = extract_text_from_pdf(uploaded_file)
-            df = extract_entities(text)
-
-        st.metric("Total Indicators", len(df))
-        st.metric("Average Confidence", round(df["Confidence"].mean(), 2) if "Confidence" in df else "N/A")
-
-        st.dataframe(df.head(10), use_container_width=True)
-    else:
-        st.info("Upload a CTI feed (PDF or CSV) or enable sample data from the sidebar.")
-
-# ----------------------------------------
-# TAB 2: NLP ANALYSIS (NER + SENTIMENT)
-# ----------------------------------------
-with tab2:
-    st.title("🧠 NLP Entity Recognition & Sentiment Analysis")
-    if uploaded_file or use_sample:
-        if use_sample:
-            text = "Sample threat report: Malware using phishing to target financial systems across networks."
-        elif uploaded_file.name.endswith(".pdf"):
-            text = extract_text_from_pdf(uploaded_file)
-        elif uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-            text = " ".join(df["Indicator"].astype(str).tolist())
-        else:
-            text = ""
-
-        st.write("### Extracted Text Preview")
-        st.write(text[:800] + "..." if len(text) > 800 else text)
-
-        entities_df = extract_entities(text)
-        sentiment = analyze_sentiment(text)
-        topic = topic_modeling(text)
-
-        st.markdown("### 🔍 Extracted Entities")
-        st.dataframe(entities_df)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Sentiment", sentiment["label"], f"{sentiment['score']*100:.1f}%")
-        with col2:
-            st.metric("Topic", topic["topic"], f"{topic['confidence']*100:.1f}%")
-    else:
-        st.info("Upload a file or enable sample data to analyze entities and sentiment.")
-
-# ----------------------------------------
-# TAB 3: KNOWLEDGE GRAPH
-# ----------------------------------------
-with tab3:
-    st.title("🌐 Cyber Threat Knowledge Graph")
-    st.markdown("Visual representation of cyber entities and their relationships.")
-    fig = draw_cti_graph()
+    ig.plot(G, target=ax, layout=layout, vertex_label=G.vs["label"], vertex_size=20)
     st.pyplot(fig)
-    st.success("Graph layout designed to show relationships between key threat elements.")
 
-# ----------------------------------------
-# TAB 4: THREAT FEED ANALYSIS
-# ----------------------------------------
-with tab4:
-    st.title("🚨 Threat Feed Analysis")
 
-    if uploaded_file or use_sample:
-        df = build_sample_feed() if use_sample else pd.read_csv(uploaded_file)
+# ---------------------------------------------------
+# STREAMLIT UI
+# ---------------------------------------------------
+st.title("🧠 Cyber Threat Intelligence Analyzer")
 
-        st.subheader("Filters")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            type_filter = st.selectbox("Indicator Type", ["All"] + sorted(df["Type"].unique()))
-        with col2:
-            conf_min, conf_max = st.slider("Confidence Range", 0.0, 100.0, (0.0, 100.0))
-        with col3:
-            source_filter = st.selectbox("Source", ["All"] + sorted(df["Source"].unique()))
+tab1, tab2, tab3, tab4 = st.tabs(["📄 Upload Data", "🧩 NER Extraction", "🕸 Knowledge Graph", "📊 Threat Feed"])
 
-        filtered_df = df.copy()
-        if type_filter != "All":
-            filtered_df = filtered_df[filtered_df["Type"] == type_filter]
-        if source_filter != "All":
-            filtered_df = filtered_df[filtered_df["Source"] == source_filter]
-        filtered_df = filtered_df[
-            (filtered_df["Confidence"] >= conf_min) &
-            (filtered_df["Confidence"] <= conf_max)
-        ]
+# GLOBALS
+uploaded_file = None
+ner_df = pd.DataFrame()
+graph_obj = None
 
-        st.dataframe(filtered_df, use_container_width=True)
-        st.write(f"**Indicator Count:** {len(filtered_df)} | **Average Confidence:** {round(filtered_df['Confidence'].mean(), 2)}")
+# ---------------------------------------------------
+# TAB 1 — UPLOAD DATA
+# ---------------------------------------------------
+with tab1:
+    st.header("Upload CTI Data (PDF or CSV)")
+    uploaded_file = st.file_uploader("Upload CTI report (.pdf) or Threat Feed (.csv)", type=["pdf", "csv"])
+    if uploaded_file:
+        if uploaded_file.name.endswith(".csv"):
+            df = safe_read_csv(uploaded_file)
+            if df is not None:
+                st.success(f"✅ Loaded {len(df)} indicators from CSV.")
+                st.dataframe(df.head(10), use_container_width=True)
+        elif uploaded_file.name.endswith(".pdf"):
+            text = extract_pdf_text(uploaded_file)
+            if text:
+                st.text_area("Extracted Text Preview", text[:2000], height=200)
+
+
+# ---------------------------------------------------
+# TAB 2 — NER Extraction
+# ---------------------------------------------------
+with tab2:
+    st.header("Named Entity Recognition (NER)")
+    sample_text = st.text_area("Paste text or use extracted PDF text", height=200)
+    if st.button("Run NER"):
+        if not sample_text.strip():
+            st.warning("Please enter or extract text first.")
+        else:
+            ner_df = extract_entities(sample_text)
+            st.dataframe(ner_df, use_container_width=True)
+            st.success(f"Extracted {len(ner_df)} entities.")
+
+
+# ---------------------------------------------------
+# TAB 3 — KNOWLEDGE GRAPH
+# ---------------------------------------------------
+with tab3:
+    st.header("Cyber Knowledge Graph")
+    if not ner_df.empty:
+        G = build_graph(ner_df["Entity"].tolist(), ner_df["Type"].tolist())
+        st.success("Knowledge graph generated.")
+        plot_graph(G)
     else:
-        st.info("Upload a CSV or enable sample data to explore threat feeds.")
+        st.info("Please run NER first to visualize relationships.")
+
+
+# ---------------------------------------------------
+# TAB 4 — THREAT FEED (CSV VIEW)
+# ---------------------------------------------------
+with tab4:
+    st.header("Threat Feed Viewer")
+    threat_file = st.file_uploader("Upload Threat Feed CSV", type=["csv"], key="threat_csv")
+
+    if threat_file:
+        df = safe_read_csv(threat_file)
+        if df is not None:
+            col1, col2 = st.columns(2)
+            with col1:
+                indicator_type = st.selectbox("Indicator Type", ["All"] + sorted(df["Type"].unique()))
+            with col2:
+                min_conf = st.slider("Min Confidence", 0.0, 100.0, 0.0)
+
+            filtered = df.copy()
+            if indicator_type != "All":
+                filtered = filtered[filtered["Type"] == indicator_type]
+            filtered = filtered[filtered["Confidence"] >= min_conf]
+
+            st.dataframe(filtered, use_container_width=True)
+            st.metric("Indicator Count", len(filtered))
+            if "Confidence" in filtered.columns:
+                st.metric("Average Confidence", round(filtered["Confidence"].mean(), 2))
