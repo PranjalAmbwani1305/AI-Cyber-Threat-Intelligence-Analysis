@@ -1,13 +1,13 @@
 import streamlit as st
 import pandas as pd
+import re
 import networkx as nx
 import matplotlib.pyplot as plt
-import re
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# --- Streamlit UI setup ---
+# --- Streamlit Setup ---
 st.set_page_config(layout="wide", page_title="CTI Dashboard")
 st.title("Cyber Threat Intelligence Dashboard")
 
@@ -16,7 +16,7 @@ task = st.sidebar.selectbox(
     "Select Analysis Task",
     [
         "Named Entity Recognition (NER)",
-        "Knowledge Graph (Source_IP → Destination_IP)",
+        "Knowledge Graph",
         "Sentence Clustering",
         "Topic Modeling",
         "Sentiment Analysis",
@@ -26,25 +26,11 @@ task = st.sidebar.selectbox(
 run = st.sidebar.button("Run Analysis")
 
 # ---------------- Load CSV ----------------
-def read_text_from_csv(file):
+def read_csv_data(file):
     df = pd.read_csv(file)
     st.write("Data preview:")
     st.dataframe(df.head())
-
-    # Auto-select a text column (for NLP tasks)
-    def score_column(series):
-        text = series.astype(str)
-        avg_len = text.map(len).mean()
-        letters = text.str.contains(r"[A-Za-z]").mean()
-        return avg_len * letters
-
-    scores = {c: score_column(df[c]) for c in df.columns}
-    best_col = max(scores, key=scores.get)
-    st.write("Auto-selected text column:", best_col)
-
-    text_data = " ".join(df[best_col].astype(str).tolist())
-    st.write("Constructed text length:", len(text_data), "characters.")
-    return text_data, df
+    return df
 
 
 def split_sentences(text):
@@ -65,37 +51,23 @@ def extract_entities(text):
     return entities
 
 
-# ---------------- Source_IP → Destination_IP Knowledge Graph ----------------
-def build_source_dest_graph(df):
-    """
-    Build a simple Knowledge Graph using Source_IP → Destination_IP connection
-    """
+# ---------------- Knowledge Graph ----------------
+def build_graph(df, src_col, dst_col):
     G = nx.DiGraph()
-    src_candidates = [c for c in df.columns if "source" in c.lower() or "src" in c.lower()]
-    dst_candidates = [c for c in df.columns if "destination" in c.lower() or "dst" in c.lower()]
-
-    if not src_candidates or not dst_candidates:
-        st.error("No Source_IP or Destination_IP columns found.")
-        return None
-
-    s_col, d_col = src_candidates[0], dst_candidates[0]
-    pairs = df[[s_col, d_col]].dropna().head(500)
-
+    pairs = df[[src_col, dst_col]].dropna().head(500)
     for _, row in pairs.iterrows():
-        src = str(row[s_col])
-        dst = str(row[d_col])
+        src, dst = str(row[src_col]), str(row[dst_col])
         if src and dst:
             G.add_edge(src, dst)
-
     return G
 
 
-def plot_source_dest_graph(G):
-    if G is None or G.number_of_nodes() == 0:
-        st.warning("No Source → Destination connections found.")
+def plot_graph(G, src_col, dst_col):
+    if G.number_of_nodes() == 0:
+        st.warning("No relationships found.")
         return
 
-    max_nodes = 100  # keep graph readable
+    max_nodes = 100
     if G.number_of_nodes() > max_nodes:
         degree_dict = dict(G.degree())
         top_nodes = sorted(degree_dict, key=degree_dict.get, reverse=True)[:max_nodes]
@@ -106,12 +78,12 @@ def plot_source_dest_graph(G):
     nx.draw_networkx_nodes(G, pos, node_color="#90CAF9", node_size=700, alpha=0.9)
     nx.draw_networkx_edges(G, pos, edge_color="#9E9E9E", arrows=True, alpha=0.6)
     nx.draw_networkx_labels(G, pos, font_size=7)
-    plt.title("Knowledge Graph: Source_IP → Destination_IP", fontsize=13)
+    plt.title(f"Knowledge Graph: {src_col} → {dst_col}", fontsize=13)
     st.pyplot(plt)
     plt.close()
 
 
-# ---------------- NLP tasks (short & clean) ----------------
+# ---------------- NLP Helpers ----------------
 def cluster_sentences(sentences):
     if not sentences:
         return {}
@@ -179,12 +151,13 @@ if not uploaded_file:
     st.info("Upload a CSV to start.")
     st.stop()
 
-text, df = read_text_from_csv(uploaded_file)
-sentences = split_sentences(text)
+df = read_csv_data(uploaded_file)
 
 if run:
     if task == "Named Entity Recognition (NER)":
         st.subheader("Named Entity Recognition")
+        col = st.selectbox("Select column for entity extraction", df.columns)
+        text = " ".join(df[col].astype(str).tolist())
         entities = extract_entities(text)
         for t, vals in entities.items():
             if vals:
@@ -192,15 +165,23 @@ if run:
             else:
                 st.markdown(f"**{t}:** None found")
 
-    elif task == "Knowledge Graph (Source_IP → Destination_IP)":
-        st.subheader("Knowledge Graph: Source_IP → Destination_IP")
-        G = build_source_dest_graph(df)
-        if G:
+    elif task == "Knowledge Graph":
+        st.subheader("Knowledge Graph (select columns)")
+        src_col = st.selectbox("Select Source Column", df.columns, index=0)
+        dst_col = st.selectbox("Select Destination Column", df.columns, index=1)
+
+        if src_col and dst_col:
+            G = build_graph(df, src_col, dst_col)
             st.write(f"Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}")
-            plot_source_dest_graph(G)
+            plot_graph(G, src_col, dst_col)
+        else:
+            st.warning("Please select both Source and Destination columns.")
 
     elif task == "Sentence Clustering":
         st.subheader("Sentence Clustering")
+        col = st.selectbox("Select column for clustering", df.columns)
+        text = " ".join(df[col].astype(str).tolist())
+        sentences = split_sentences(text)
         clusters = cluster_sentences(sentences)
         if not clusters:
             st.warning("No clusters found.")
@@ -212,6 +193,9 @@ if run:
 
     elif task == "Topic Modeling":
         st.subheader("Topic Modeling")
+        col = st.selectbox("Select column for topic modeling", df.columns)
+        text = " ".join(df[col].astype(str).tolist())
+        sentences = split_sentences(text)
         topics = topic_model(sentences)
         for t, info in topics.items():
             st.markdown(f"### Topic {t}")
@@ -221,10 +205,14 @@ if run:
 
     elif task == "Sentiment Analysis":
         st.subheader("Sentiment Analysis")
+        col = st.selectbox("Select column for sentiment analysis", df.columns)
+        text = " ".join(df[col].astype(str).tolist())
         res = sentiment_analysis(text)
         st.markdown(f"**Sentiment:** {res['label']}  |  **Score:** {res['score']}")
 
     elif task == "CTI Classification":
         st.subheader("CTI Classification")
+        col = st.selectbox("Select column for CTI classification", df.columns)
+        text = " ".join(df[col].astype(str).tolist())
         cats = cti_classify(text)
         st.markdown("**Detected CTI Categories:** " + ", ".join(cats))
