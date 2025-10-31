@@ -4,15 +4,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from io import BytesIO
 import traceback
+from app.nlp_logic import Textract_pdf_text, process_cti_pdf, split_into_sentences, perform_clustering, build_cti_graph
 
-# ======= IMPORT NLP FUNCTIONS =======
-from app.nlp_logic import (
-    extract_pdf_text,
-    process_cti_pdf,
-    split_into_sentences,
-    perform_clustering,
-    build_cti_graph
-)
 
 # ======= PAGE CONFIG =======
 st.set_page_config(
