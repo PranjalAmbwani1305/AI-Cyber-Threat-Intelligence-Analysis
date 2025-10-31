@@ -2,13 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import igraph as ig
-from nlp_logic import (
-    extract_pdf_text,
-    split_into_sentences,
-    perform_clustering,
-    build_cti_graph,
-    process_cti_data
-)
+from nlp_logic import extract_pdf_text, split_into_sentences, perform_clustering, build_cti_graph, process_cti_data
 
 # ---------------- STREAMLIT CONFIG ----------------
 st.set_page_config(page_title="🧠 AI Cyber Threat Intelligence Dashboard", layout="wide")
