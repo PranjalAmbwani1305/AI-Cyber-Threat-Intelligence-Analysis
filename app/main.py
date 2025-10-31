@@ -2,92 +2,85 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import igraph as ig
 import pandas as pd
-import os
 
-# Dynamic import that works both locally and on Streamlit Cloud
 try:
     from app.nlp_logic import extract_pdf_text, split_into_sentences, perform_clustering, build_cti_graph, process_cti_data
 except ModuleNotFoundError:
     from nlp_logic import extract_pdf_text, split_into_sentences, perform_clustering, build_cti_graph, process_cti_data
 
-# ------------------ STREAMLIT LAYOUT ------------------
+# ------------------ UI CONFIG ------------------
 st.set_page_config(page_title="AI Cyber Threat Intelligence Dashboard", layout="wide")
 st.title("🧠 AI Cyber Threat Intelligence Dashboard")
 st.markdown("""
-Transform **Cyber Threat Intelligence (CTI)** data — structured or unstructured — into actionable insights  
-using entity extraction, clustering, and knowledge graph analytics.
+Transform **Cyber Threat Intelligence (CTI)** data — structured or unstructured —  
+into actionable insights using entity extraction, clustering, and knowledge graph analytics.
 """)
 
-# Sidebar
+# ------------------ SIDEBAR ------------------
 st.sidebar.header("📂 Upload CTI Report")
 uploaded_file = st.sidebar.file_uploader("Choose a CTI report", type=["csv", "pdf", "txt"])
 st.sidebar.markdown("Limit 200MB per file")
+quick_mode = st.sidebar.checkbox("⚡ Quick Mode (faster loading)", value=True)
 
-quick_mode = st.sidebar.checkbox("⚡ Quick Mode (skip heavy layout)", value=True)
-
+# ------------------ MAIN PROCESS ------------------
 if uploaded_file:
-    st.info(f"📄 Processing `{uploaded_file.name}` ...")
+    with st.spinner(f"Processing `{uploaded_file.name}`... Please wait ⏳"):
+        try:
+            result = process_cti_data(uploaded_file)
 
-    try:
-        result = process_cti_data(uploaded_file)
+            entities_df = result["entities"]
+            sentences = result["sentences"]
+            graph = result["graph"]
+            cluster_labels = result.get("cluster_labels", [])
+            topic_map = result.get("topic_map", {})
 
-        entities_df = result["entities"]
-        sentences = result["sentences"]
-        graph = result["graph"]
-        cluster_labels = result.get("cluster_labels", [])
-        topic_map = result.get("topic_map", {})
+            st.success("✅ CTI Analysis Completed Successfully!")
 
-        st.success("✅ Analysis complete!")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Entities Extracted", len(entities_df))
+            c2.metric("Sentences Processed", len(sentences))
+            c3.metric("Relationships Identified", len(graph.es))
 
-        # Summary
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Entities Extracted", len(entities_df))
-        c2.metric("Sentences Processed", len(sentences))
-        c3.metric("Relationships Identified", len(graph.es))
+            st.divider()
+            st.subheader("📍 Extracted Entities")
+            if not entities_df.empty:
+                st.dataframe(entities_df.head(50), use_container_width=True)
+                st.bar_chart(entities_df["Type"].value_counts())
+            else:
+                st.warning("No entities detected in the uploaded file.")
 
-        st.divider()
-        st.subheader("📍 Extracted Entities")
-        if not entities_df.empty:
-            st.dataframe(entities_df.head(100), use_container_width=True)
-            st.bar_chart(entities_df["Type"].value_counts())
-        else:
-            st.warning("No entities found.")
+            st.subheader("🧩 Sentence Clustering")
+            if sentences:
+                cluster_df = pd.DataFrame({"Sentence": sentences, "Cluster": cluster_labels})
+                st.dataframe(cluster_df.head(30), use_container_width=True)
+            else:
+                st.info("No textual data found for clustering.")
 
-        st.subheader("🧩 Sentence Clustering")
-        if sentences:
-            _, cluster_labels, topic_map = perform_clustering(sentences)
-            cluster_df = pd.DataFrame({"Sentence": sentences, "Cluster": cluster_labels})
-            st.dataframe(cluster_df.head(50), use_container_width=True)
-        else:
-            st.info("No sentences available for clustering.")
+            st.subheader("🌐 Cyber Threat Knowledge Graph")
+            if len(graph.vs) > 0:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                layout = "fruchterman_reingold" if quick_mode else "kamada_kawai"
+                ig.plot(
+                    graph,
+                    target=ax,
+                    layout=graph.layout(layout),
+                    vertex_color=graph.vs["color"],
+                    vertex_label=graph.vs["label"],
+                    vertex_size=20,
+                    edge_color="gray",
+                )
+                st.pyplot(fig)
+            else:
+                st.warning("Graph could not be generated — no relationships found.")
 
-        st.subheader("🌐 Cyber Threat Knowledge Graph")
-        if len(graph.vs) > 0:
-            fig, ax = plt.subplots(figsize=(10, 7))
-            layout = None if quick_mode else graph.layout("kamada_kawai")
-            ig.plot(
-                graph,
-                target=ax,
-                layout=layout,
-                vertex_size=20,
-                vertex_color=graph.vs["color"],
-                vertex_label=graph.vs["label"],
-                edge_color="gray",
-                vertex_label_size=10
-            )
-            st.pyplot(fig)
-        else:
-            st.warning("Graph could not be generated — insufficient relationships.")
+            with st.expander("📜 Raw Text Preview"):
+                preview = extract_pdf_text(uploaded_file)
+                st.text_area("Extracted Text", preview[:2000], height=250)
 
-        with st.expander("📜 Raw Text Preview"):
-            preview = extract_pdf_text(uploaded_file)
-            st.text_area("Extracted Text", preview[:3000], height=300)
-
-    except Exception as e:
-        st.error("❌ An error occurred during report processing.")
-        st.exception(e)
+        except Exception as e:
+            st.error("❌ An error occurred during report processing.")
+            st.exception(e)
 else:
-    st.info("Please upload a CTI file (CSV or PDF) to begin analysis.")
+    st.info("Please upload a CTI dataset (CSV, PDF, or TXT) to begin analysis.")
 
-st.divider()
-st.caption("AI Cyber Threat Intelligence Dashboard — SecureBERT & SentenceTransformer © 2025")
+st.caption("AI Cyber Threat Intelligence Dashboard — BERT & SentenceTransformer © 2025")
