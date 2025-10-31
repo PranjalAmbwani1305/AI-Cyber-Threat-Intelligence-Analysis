@@ -1,14 +1,22 @@
 import streamlit as st
 import pandas as pd
-from nlp_logic import extract_text, extract_entities, build_cti_graph, plot_cti_graph
+from nlp_logic import load_model, extract_text, chunk_text, build_cti_graph, plot_cti_graph
 
 st.set_page_config(page_title="Cyber Threat Intelligence Analyzer", layout="wide")
 
-st.title("Cyber Threat Intelligence (CTI) Analyzer")
-st.markdown("Upload **CSV, TXT, or PDF** reports to extract threat entities and visualize relationships.")
+st.title("🧠 Cyber Threat Intelligence (CTI) Knowledge Graph Builder")
+st.markdown("""
+Upload a **CSV**, **TXT**, or **PDF** report to extract cybersecurity entities using NLP  
+and visualize threat relationships through an intelligent Knowledge Graph.
+""")
 
-# --- File upload ---
-uploaded_file = st.file_uploader("Upload CTI Report", type=["csv", "txt", "pdf"])
+@st.cache_resource
+def init_model():
+    return load_model()
+
+tokenizer, ner_pipeline = init_model()
+
+uploaded_file = st.file_uploader("Upload CTI Report", type=["csv", "pdf", "txt"])
 
 if uploaded_file:
     with st.spinner("Extracting text..."):
@@ -17,26 +25,29 @@ if uploaded_file:
     if not text.strip():
         st.error("No readable text found in the uploaded file.")
     else:
-        st.success("Text extracted successfully!")
+        st.success("✅ Text successfully extracted.")
 
-        with st.spinner("Running NLP analysis..."):
-            df_entities = extract_entities(text)
+        chunks = chunk_text(text, tokenizer)
+        st.write(f"Processing {len(chunks)} text segments...")
 
-        if df_entities.empty:
-            st.warning("No cyber entities detected in the report.")
+        results = []
+        for chunk in chunks:
+            results.extend(ner_pipeline(chunk))
+
+        if not results:
+            st.warning("No cybersecurity entities found.")
         else:
-            st.subheader("Extracted Entities")
-            st.dataframe(df_entities, use_container_width=True)
+            df = pd.DataFrame(results)
+            df = df.rename(columns={"word": "Entity", "entity_group": "Type", "score": "Confidence"})
+            df["Confidence"] = df["Confidence"].round(3)
 
-            # Build and visualize knowledge graph
-            with st.spinner("Building knowledge graph..."):
-                G = build_cti_graph(df_entities["Entity"], df_entities["Type"])
+            st.subheader("📋 Extracted Cyber Entities")
+            st.dataframe(df[["Entity", "Type", "Confidence"]], use_container_width=True)
+
+            with st.spinner("Building Knowledge Graph..."):
+                G = build_cti_graph(df["Entity"].tolist(), df["Type"].tolist())
                 fig = plot_cti_graph(G)
 
-            st.subheader("Knowledge Graph Visualization")
+            st.subheader("🌐 Knowledge Graph Visualization")
             st.pyplot(fig)
-
-            st.success(f"Extracted {len(df_entities)} entities and built {len(G.edges)} relationships.")
-
-else:
-    st.info("Please upload a file to begin analysis.")
+            st.success(f"Extracted {len(G.nodes)} entities and {len(G.edges)} relationships.")
