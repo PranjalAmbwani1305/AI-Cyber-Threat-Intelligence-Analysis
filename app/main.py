@@ -2,13 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import igraph as ig
-from nlp_logic import (
-    extract_pdf_text,
-    process_cti_pdf,
-    split_into_sentences,
-    perform_clustering,
-    build_cti_graph
-)
+from nlp_logic import extract_pdf_text, process_cti_pdf, split_into_sentences, perform_clustering, build_cti_graph
 
 # ------------- STREAMLIT CONFIG -------------
 st.set_page_config(
