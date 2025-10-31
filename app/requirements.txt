@@ -17,3 +17,5 @@ pytesseract
 Pillow
 openai
 pymupdf
+pyvis
+networkx
