@@ -1,86 +1,73 @@
+# app/main.py
 import streamlit as st
-import matplotlib.pyplot as plt
-import igraph as ig
 import pandas as pd
+from nlp_logic import process_cti_file, visualize_graph_matplotlib
+import matplotlib.pyplot as plt
 
-try:
-    from app.nlp_logic import extract_pdf_text, split_into_sentences, perform_clustering, build_cti_graph, process_cti_data
-except ModuleNotFoundError:
-    from nlp_logic import extract_pdf_text, split_into_sentences, perform_clustering, build_cti_graph, process_cti_data
-
-# ------------------ UI CONFIG ------------------
-st.set_page_config(page_title="AI Cyber Threat Intelligence Dashboard", layout="wide")
+st.set_page_config(page_title="AI CTI Dashboard", layout="wide")
 st.title("🧠 AI Cyber Threat Intelligence Dashboard")
-st.markdown("""
-Transform **Cyber Threat Intelligence (CTI)** data — structured or unstructured —  
-into actionable insights using entity extraction, clustering, and knowledge graph analytics.
-""")
+st.markdown("Transform CTI data (CSV / PDF / TXT / XLSX) into entity insights, clusters and a knowledge graph.")
 
-# ------------------ SIDEBAR ------------------
-st.sidebar.header("📂 Upload CTI Report")
-uploaded_file = st.sidebar.file_uploader("Choose a CTI report", type=["csv", "pdf", "txt"])
-st.sidebar.markdown("Limit 200MB per file")
-quick_mode = st.sidebar.checkbox("⚡ Quick Mode (faster loading)", value=True)
+# --- Sidebar upload ---
+uploaded = st.sidebar.file_uploader("Upload CTI report (CSV, PDF, TXT, XLSX)", type=["csv", "pdf", "txt", "xlsx"])
+st.sidebar.markdown("Supports CSV, Excel, PDF, or text files. Max recommended size: 200MB.")
 
-# ------------------ MAIN PROCESS ------------------
-if uploaded_file:
-    with st.spinner(f"Processing `{uploaded_file.name}`... Please wait ⏳"):
+if uploaded:
+    with st.spinner("Processing file — this may take a few seconds..."):
         try:
-            result = process_cti_data(uploaded_file)
-
-            entities_df = result["entities"]
-            sentences = result["sentences"]
-            graph = result["graph"]
-            cluster_labels = result.get("cluster_labels", [])
-            topic_map = result.get("topic_map", {})
-
-            st.success("✅ CTI Analysis Completed Successfully!")
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Entities Extracted", len(entities_df))
-            c2.metric("Sentences Processed", len(sentences))
-            c3.metric("Relationships Identified", len(graph.es))
-
-            st.divider()
-            st.subheader("📍 Extracted Entities")
-            if not entities_df.empty:
-                st.dataframe(entities_df.head(50), use_container_width=True)
-                st.bar_chart(entities_df["Type"].value_counts())
-            else:
-                st.warning("No entities detected in the uploaded file.")
-
-            st.subheader("🧩 Sentence Clustering")
-            if sentences:
-                cluster_df = pd.DataFrame({"Sentence": sentences, "Cluster": cluster_labels})
-                st.dataframe(cluster_df.head(30), use_container_width=True)
-            else:
-                st.info("No textual data found for clustering.")
-
-            st.subheader("🌐 Cyber Threat Knowledge Graph")
-            if len(graph.vs) > 0:
-                fig, ax = plt.subplots(figsize=(10, 6))
-                layout = "fruchterman_reingold" if quick_mode else "kamada_kawai"
-                ig.plot(
-                    graph,
-                    target=ax,
-                    layout=graph.layout(layout),
-                    vertex_color=graph.vs["color"],
-                    vertex_label=graph.vs["label"],
-                    vertex_size=20,
-                    edge_color="gray",
-                )
-                st.pyplot(fig)
-            else:
-                st.warning("Graph could not be generated — no relationships found.")
-
-            with st.expander("📜 Raw Text Preview"):
-                preview = extract_pdf_text(uploaded_file)
-                st.text_area("Extracted Text", preview[:2000], height=250)
-
+            res = process_cti_file(uploaded, clustering_k=6)
         except Exception as e:
-            st.error("❌ An error occurred during report processing.")
-            st.exception(e)
-else:
-    st.info("Please upload a CTI dataset (CSV, PDF, or TXT) to begin analysis.")
+            st.error(f"Processing error: {e}")
+            raise
 
-st.caption("AI Cyber Threat Intelligence Dashboard — BERT & SentenceTransformer © 2025")
+    # Metrics
+    entities_df = res.get("entities", pd.DataFrame())
+    sentences = res.get("sentences", [])
+    graph = res.get("graph", None)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Entities Extracted", len(entities_df))
+    c2.metric("Sentences Processed", len(sentences))
+    c3.metric("Graph Nodes", len(graph.vs) if graph else 0)
+
+    st.markdown("---")
+
+    # Entities table
+    st.subheader("Extracted Entities")
+    if not entities_df.empty:
+        st.dataframe(entities_df, use_container_width=True)
+        st.markdown("**Entity type counts**")
+        st.bar_chart(entities_df["Type"].value_counts())
+    else:
+        st.info("No entities identified.")
+
+    st.markdown("---")
+
+    # Clustering preview
+    st.subheader("Semantic Clusters (sample)")
+    topic_map = res.get("topic_map", {})
+    if topic_map:
+        for cid, items in topic_map.items():
+            st.markdown(f"**Cluster {cid+1}**")
+            for s in items[:5]:
+                st.write("- " + s)
+    else:
+        st.info("No clusters available (insufficient text).")
+
+    st.markdown("---")
+
+    # Graph visualization
+    st.subheader("Knowledge Graph")
+    fig = visualize_graph_matplotlib(graph)
+    if fig:
+        st.pyplot(fig)
+    else:
+        st.info("Graph could not be generated (no entities/relationships).")
+
+    st.markdown("---")
+    with st.expander("Raw extracted text (preview)"):
+        txt = res.get("text", "")
+        st.text_area("Text preview", txt[:5000], height=300)
+
+else:
+    st.info("Upload a CTI file in the left sidebar to start analysis.")
