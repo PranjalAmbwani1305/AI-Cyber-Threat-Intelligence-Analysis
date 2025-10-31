@@ -1,135 +1,154 @@
 import streamlit as st
 import pandas as pd
-import time
-from nlp_logic import load_model, extract_text, chunk_text, build_cti_graph, plot_cti_graph
+import networkx as nx
+import matplotlib.pyplot as plt
+from io import BytesIO
+import traceback
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="CTI Dashboard", layout="wide")
+# ------------------- IMPORT CORE NLP LOGIC -------------------
+from app.nlp_logic import (
+    extract_pdf_text,
+    split_into_sentences,
+    process_cti_pdf
+)
 
-st.title("🧠 Streamlit Frontend")
-tabs = st.tabs(["Overview", "NER", "Knowledge Graph", "Threat Feed"])
+# ------------------- STREAMLIT CONFIG -------------------
+st.set_page_config(page_title="AI CTI Intelligence Dashboard", layout="wide")
 
-# --- CACHING (For Speed) ---
-@st.cache_resource(show_spinner=False)
-def init_model():
-    return load_model()
+st.title("AI-Powered Cyber Threat Intelligence Dashboard")
+st.markdown(
+    "Upload a CTI report (.pdf, .csv, .xlsx, or .txt) to analyze entities, clusters, and relationships "
+    "using SecureBERT-NER and SentenceTransformer-based CTI graph intelligence."
+)
 
-@st.cache_data(show_spinner=False)
-def load_csv(file):
-    return pd.read_csv(file)
+# ------------------- FILE UPLOAD -------------------
+uploaded_file = st.file_uploader("Upload CTI Report", type=["pdf", "csv", "xlsx", "txt"])
 
-tokenizer, ner_pipeline = init_model()
+if uploaded_file:
+    st.info(f"Processing file: {uploaded_file.name}")
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("File Uploader")
-    uploaded_file = st.file_uploader("Upload threat feed (.csv, .pdf, .txt)")
-    use_sample = st.checkbox("Use sample data")
+    # ------------------- TEXT EXTRACTION -------------------
+    text = ""
+    try:
+        if uploaded_file.name.lower().endswith(".pdf"):
+            text = extract_pdf_text(uploaded_file)
+        elif uploaded_file.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+            text = " ".join(df.astype(str).values.flatten())
+        elif uploaded_file.name.lower().endswith(".xlsx"):
+            df = pd.read_excel(uploaded_file)
+            text = " ".join(df.astype(str).values.flatten())
+        elif uploaded_file.name.lower().endswith(".txt"):
+            text = uploaded_file.read().decode("utf-8")
+    except Exception as e:
+        st.error(f"Error extracting text: {e}")
+        st.text(traceback.format_exc())
+        st.stop()
 
-# --- OVERVIEW TAB ---
-with tabs[0]:
-    st.subheader("Overview")
-    st.markdown("""
-    This dashboard analyzes **Cyber Threat Intelligence (CTI)** feeds,
-    extracts indicators, and visualizes relationships between entities.
-    """)
+    if not text.strip():
+        st.error("No text could be extracted from this file.")
+        st.stop()
 
-# --- NER TAB ---
-with tabs[1]:
-    st.subheader("Named Entity Recognition")
-    if uploaded_file or use_sample:
-        with st.spinner("Extracting entities..."):
-            if use_sample:
-                text = "APT29 used Cobalt Strike to target Windows 10 vulnerability CVE-2021-34527."
-            else:
-                text = extract_text(uploaded_file)
+    st.success("Text extraction completed successfully.")
+    st.download_button("Download Extracted Text", text, file_name="extracted_text.txt")
 
-            # Chunk text quickly (no redundant tokenization)
-            chunks = chunk_text(text, tokenizer)
-            entities = []
-            for chunk in chunks:
-                entities.extend(ner_pipeline(chunk))
+    st.divider()
 
-        if entities:
-            df = pd.DataFrame(entities).rename(
-                columns={"word": "Entity", "entity_group": "Type", "score": "Confidence"}
-            )
-            df["Confidence"] = (df["Confidence"] * 100).round(1)
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.warning("No entities detected.")
-    else:
-        st.info("Upload a file or use sample data to begin.")
+    # ------------------- MAIN NLP PIPELINE -------------------
+    try:
+        with st.spinner("Running NLP pipeline..."):
+            result = process_cti_pdf(uploaded_file)
 
-# --- KNOWLEDGE GRAPH TAB ---
-with tabs[2]:
-    st.subheader("Knowledge Graph")
-    if uploaded_file or use_sample:
-        if use_sample:
-            df_entities = pd.DataFrame({
-                "Entity": ["APT29", "Cobalt Strike", "Windows 10", "CVE-2021-34527"],
-                "Type": ["APT", "Tool", "OS", "CVE"]
-            })
-        else:
-            text = extract_text(uploaded_file)
-            chunks = chunk_text(text, tokenizer)
-            results = []
-            for chunk in chunks:
-                results.extend(ner_pipeline(chunk))
-            df_entities = pd.DataFrame(results).rename(
-                columns={"word": "Entity", "entity_group": "Type"}
-            )
+        df_entities = result["entities"]
+        G_igraph = result["graph"]
+        sentences = result["sentences"]
+        cluster_labels = result["cluster_labels"]
+        topic_map = result["topic_map"]
 
+    except Exception as e:
+        st.error(f"Processing failed: {e}")
+        st.text(traceback.format_traceback())
+        st.stop()
+
+    # ------------------- DISPLAY RESULTS -------------------
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Entities (NER)",
+        "Semantic Clustering",
+        "Sentences",
+        "Knowledge Graph"
+    ])
+
+    # -------- TAB 1: NER Entities --------
+    with tab1:
+        st.subheader("Named Entity Recognition (SecureBERT-NER)")
         if not df_entities.empty:
-            with st.spinner("Building knowledge graph..."):
-                G = build_cti_graph(df_entities["Entity"], df_entities["Type"])
-                fig = plot_cti_graph(G)
-            st.pyplot(fig)
+            st.dataframe(df_entities, use_container_width=True)
+            st.bar_chart(df_entities["Type"].value_counts())
+            st.download_button(
+                "Download Entities CSV",
+                df_entities.to_csv(index=False),
+                "entities.csv"
+            )
         else:
-            st.warning("No entities to visualize.")
-    else:
-        st.info("Upload a file or use sample data to view the graph.")
+            st.warning("No entities detected in the text.")
 
-# --- THREAT FEED TAB ---
-with tabs[3]:
-    st.subheader("Threat Feed")
+    # -------- TAB 2: Semantic Clustering --------
+    with tab2:
+        st.subheader("Sentence Clustering (Semantic Embeddings + DBSCAN)")
+        if cluster_labels is not None:
+            cluster_df = pd.DataFrame({
+                "Sentence": sentences,
+                "Cluster_ID": cluster_labels
+            })
+            st.dataframe(cluster_df, use_container_width=True)
 
-    # Load data
-    if uploaded_file:
-        with st.spinner("Loading CSV..."):
-            df_feed = load_csv(uploaded_file)
-    elif use_sample:
-        df_feed = pd.DataFrame({
-            "Indicator": ["105.4.302.40", "125.8.33.228", "200.200.0.86", "231.407.96.197", "222.0.13.1"],
-            "Type": ["Domain", "Domain", "Domain", "Malware", "Domain"],
-            "Confidence": [1.8, 1.9, 100, 100, 100],
-            "Source": ["True", "False", "True", "False", "True"]
-        })
-    else:
-        df_feed = pd.DataFrame()
+            st.write("Topic Mapping Summary:")
+            for cid, topic in topic_map.items():
+                st.write(f"- Cluster {cid}: {topic}")
 
-    if not df_feed.empty:
-        st.markdown("### Filters")
+            st.download_button(
+                "Download Clustering CSV",
+                cluster_df.to_csv(index=False),
+                "sentence_clusters.csv"
+            )
+        else:
+            st.warning("No clusters generated for this report.")
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            type_filter = st.selectbox("Indicator Type", ["All"] + sorted(df_feed["Type"].unique().tolist()))
-        with col2:
-            confidence_filter = st.slider("Confidence", 0.0, 100.0, (0.0, 100.0))
-        with col3:
-            source_filter = st.selectbox("Source", ["All"] + sorted(df_feed["Source"].unique().tolist()))
+    # -------- TAB 3: Sentences --------
+    with tab3:
+        st.subheader("Extracted Sentences")
+        st.write(f"Total sentences detected: {len(sentences)}")
+        for s in sentences[:100]:
+            st.write("• " + s)
 
-        # Fast filter operations
-        mask = (df_feed["Confidence"] >= confidence_filter[0]) & (df_feed["Confidence"] <= confidence_filter[1])
-        if type_filter != "All":
-            mask &= df_feed["Type"] == type_filter
-        if source_filter != "All":
-            mask &= df_feed["Source"] == source_filter
+    # -------- TAB 4: Knowledge Graph --------
+    with tab4:
+        st.subheader("CTI Knowledge Graph Visualization")
+        try:
+            if G_igraph.vcount() > 0:
+                G_nx = nx.Graph()
+                for v in G_igraph.vs:
+                    G_nx.add_node(v["name"], label=v["type"])
+                for e in G_igraph.es:
+                    src = G_igraph.vs[e.source]["name"]
+                    tgt = G_igraph.vs[e.target]["name"]
+                    G_nx.add_edge(src, tgt, label=e["label"])
 
-        filtered = df_feed[mask]
+                fig, ax = plt.subplots(figsize=(12, 8))
+                pos = nx.spring_layout(G_nx, k=0.5)
+                nx.draw_networkx_nodes(G_nx, pos, node_size=800, node_color="skyblue", alpha=0.8)
+                nx.draw_networkx_labels(G_nx, pos, font_size=8)
+                nx.draw_networkx_edges(G_nx, pos, width=1.0, alpha=0.6)
+                plt.title("CTI Knowledge Graph", fontsize=14)
+                st.pyplot(fig)
+            else:
+                st.info("No relationships found to visualize.")
+        except Exception as e:
+            st.error("Graph rendering failed.")
+            st.text(traceback.format_exc())
 
-        st.dataframe(filtered, use_container_width=True)
-        st.markdown(f"**Indicator Count:** {len(filtered)}")
-        st.markdown(f"**Average Confidence:** {filtered['Confidence'].mean():.2f}")
-    else:
-        st.info("Upload a CSV or use sample data to view threat feed.")
+else:
+    st.info("Upload a CTI report to begin analysis.")
+
+st.divider()
+st.caption("Cyber Threat Intelligence Suite — Powered by SecureBERT-NER | SentenceTransformer | igraph | 2025")
