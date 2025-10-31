@@ -1,196 +1,105 @@
+import re
 import nltk
 import pandas as pd
-import igraph as ig
 import matplotlib.pyplot as plt
+import igraph as ig
 from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
-from PyPDF2 import PdfReader
-import re
-import warnings
+from sklearn.cluster import KMeans
+from sentence_transformers import SentenceTransformer
+import streamlit as st
 
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-# --- DOWNLOAD NLTK RESOURCES ---
-nltk.download("punkt", quiet=True)
-
-# --- LOAD MODEL ---
-MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
-try:
+# ------------------ INIT CONFIG ------------------
+@st.cache_resource
+def load_ner_model():
+    MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
-    ner_pipeline = pipeline(
-        "token-classification",
-        model=model,
-        tokenizer=tokenizer,
-        aggregation_strategy="simple"
-    )
-    MODEL_LOADED = True
-except Exception as e:
-    print(f"⚠️ Model load failed: {e}")
-    MODEL_LOADED = False
+    ner = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+    return ner
 
+ner_pipeline = load_ner_model()
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# -------------------------------------------------------------------
-# 1️⃣ UTILITIES
-# -------------------------------------------------------------------
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt")
 
-def extract_pdf_text(file_obj):
-    """Extract readable text from PDF."""
-    try:
-        reader = PdfReader(file_obj)
-        text = ""
-        for page in reader.pages:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-        return text
-    except Exception as e:
-        return f"Error reading PDF: {e}"
-
-
-def split_into_sentences(text: str):
-    """Split text into sentences."""
-    try:
-        sentences = nltk.sent_tokenize(text)
-        return [s.strip() for s in sentences if s.strip()]
-    except Exception:
-        return [text]
-
-
-def clean_text(text):
-    """Normalize and clean extracted text."""
-    text = re.sub(r"\s+", " ", str(text))
-    text = text.replace("–", "-").replace("•", "")
-    return text.strip()
-
-
-# -------------------------------------------------------------------
-# 2️⃣ NLP CORE
-# -------------------------------------------------------------------
-
-def process_cti_pdf(file_obj):
-    """
-    Handles both structured and unstructured CTI input.
-    Returns a dictionary with entities, sentences, and clustering info.
-    """
-    if not MODEL_LOADED:
-        return {"error": "NER model not loaded."}
-
-    text = ""
-    if hasattr(file_obj, "name") and file_obj.name.endswith(".pdf"):
-        text = extract_pdf_text(file_obj)
-    elif hasattr(file_obj, "read"):  # Streamlit uploaded CSV/XLSX
-        text = file_obj.read().decode("utf-8", errors="ignore")
+# ------------------ TEXT PROCESSING ------------------
+def extract_pdf_text(file_path):
+    """Reads text from uploaded file (PDF or CSV)."""
+    if file_path.name.endswith(".csv"):
+        df = pd.read_csv(file_path)
+        text_columns = [c for c in df.columns if df[c].dtype == "object"]
+        return " ".join(df[text_columns].fillna("").astype(str).values.flatten())
+    elif file_path.name.endswith(".pdf"):
+        from PyPDF2 import PdfReader
+        reader = PdfReader(file_path)
+        return " ".join([page.extract_text() or "" for page in reader.pages])
     else:
-        try:
-            df = pd.read_csv(file_obj)
-            text_cols = [c for c in df.columns if df[c].dtype == "object"]
-            text = " ".join(df[text_cols].fillna("").astype(str).values.flatten())
-        except Exception:
-            text = str(file_obj)
+        return ""
 
-    text = clean_text(text)
-    sentences = split_into_sentences(text)
+def split_into_sentences(text):
+    """Splits text into sentences."""
+    text = re.sub(r"\s+", " ", text.strip())
+    return nltk.sent_tokenize(text)
 
-    entities, labels = [], []
-    for sent in sentences:
-        try:
-            results = ner_pipeline(sent)
-            for r in results:
-                entities.append(r["word"])
-                labels.append(r["entity_group"])
-        except Exception:
-            continue
-
-    entities_df = pd.DataFrame({"Entity": entities, "Type": labels})
-    return {
-        "text": text,
-        "sentences": sentences,
-        "entities": entities_df
-    }
-
-
-# -------------------------------------------------------------------
-# 3️⃣ CLUSTERING
-# -------------------------------------------------------------------
-
-def perform_clustering(sentences):
-    """Groups semantically similar CTI sentences."""
-    from sentence_transformers import SentenceTransformer
-    from sklearn.cluster import KMeans
-
+# ------------------ NLP FUNCTIONS ------------------
+def perform_clustering(sentences, n_clusters=5):
+    """Groups sentences into semantic clusters."""
     if not sentences:
         return [], [], {}
-
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(sentences)
-    n_clusters = min(5, len(sentences))
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    embeddings = embedder.encode(sentences)
+    kmeans = KMeans(n_clusters=min(n_clusters, len(sentences)), random_state=42)
     labels = kmeans.fit_predict(embeddings)
-
-    topic_map = {
-        i: " | ".join([sentences[j][:80] for j in range(len(sentences)) if labels[j] == i][:2])
-        for i in range(n_clusters)
-    }
-
+    topic_map = {i: [] for i in range(max(labels) + 1)}
+    for s, l in zip(sentences, labels):
+        topic_map[l].append(s)
     return embeddings, labels, topic_map
 
-
-# -------------------------------------------------------------------
-# 4️⃣ KNOWLEDGE GRAPH
-# -------------------------------------------------------------------
-
-def build_cti_graph(entities_df):
-    """Create a visually enhanced CTI knowledge graph using iGraph."""
+def build_cti_graph(entities_df, labels=None):
+    """Builds an iGraph knowledge graph from entity pairs."""
     if entities_df.empty:
         return ig.Graph()
 
     entities = entities_df["Entity"].tolist()
-    labels = entities_df["Type"].tolist()
+    types = entities_df["Type"].tolist() if "Type" in entities_df else ["Unknown"] * len(entities)
 
     G = ig.Graph(directed=True)
-    unique_entities = list(dict.fromkeys(entities))
-    G.add_vertices(unique_entities)
-
-    color_palette = {
-        "APT": "#ff4b4b", "ACT": "#007bff", "TOOL": "#28a745", "IDTY": "#ffc107",
-        "VULID": "#6610f2", "IP": "#20c997", "URL": "#6f42c1", "DOMAIN": "#fd7e14",
-        "HASH": "#17a2b8", "FILE": "#e83e8c", "MISC": "#adb5bd"
+    G.add_vertices(list(set(entities)))
+    color_map = {
+        "ACT": "#1f78b4", "TOOL": "#33a02c", "IDTY": "#ff7f00", "APT": "#e31a1c",
+        "CVE": "#ffff99", "IP": "#a6cee3", "URL": "#b2df8a", "DOMAIN": "#fdbf6f",
+        "HASH": "#fb9a99", "FILE": "#cab2d6", "Unknown": "#cccccc"
     }
-    node_colors = [color_palette.get(lbl, "#a6a6a6") for lbl in labels[:len(unique_entities)]]
-    G.vs["name"] = unique_entities
-    G.vs["color"] = node_colors
+    G.vs["color"] = [color_map.get(t, "#cccccc") for t in types[:len(G.vs)]]
     G.vs["label"] = G.vs["name"]
 
-    edges = []
+    edges, labels = [], []
     for i in range(len(entities) - 1):
-        if entities[i] != entities[i + 1]:
-            edges.append((entities[i], entities[i + 1]))
-
-    valid_edges = [(a, b) for a, b in edges if a in G.vs["name"] and b in G.vs["name"]]
-    G.add_edges(valid_edges)
-
-    G.es["color"] = "gray"
-    G.es["label"] = "related_to"
+        src, dst = entities[i], entities[i + 1]
+        if src != dst:
+            edges.append((src, dst))
+            labels.append("related_to")
+    if edges:
+        G.add_edges(edges)
+        G.es["label"] = labels
+        G.es["color"] = "gray"
     return G
 
+# ------------------ MAIN PROCESSOR ------------------
+def process_cti_data(file):
+    """Extracts entities, clusters text, and builds CTI knowledge graph."""
+    text = extract_pdf_text(file)
+    sentences = split_into_sentences(text)
+    chunks = [text[i:i + 500] for i in range(0, len(text), 500)]
+    results = [res for chunk in chunks for res in ner_pipeline(chunk)]
+    if not results:
+        return {"entities": pd.DataFrame(), "sentences": sentences, "graph": ig.Graph()}
 
-def plot_knowledge_graph(G):
-    """Return a Matplotlib figure of the knowledge graph."""
-    if G.vcount() == 0:
-        return None
+    entities_df = pd.DataFrame(results).rename(columns={"word": "Entity", "entity_group": "Type"})
+    entities_df["Score"] = entities_df["score"].round(3)
 
-    layout = G.layout("fr")
-    fig, ax = plt.subplots(figsize=(10, 7))
-    ig.plot(
-        G,
-        target=ax,
-        layout=layout,
-        vertex_size=25,
-        vertex_label=G.vs["label"],
-        vertex_color=G.vs["color"],
-        edge_arrow_size=0.4,
-        edge_color="gray"
-    )
-    ax.set_title("Cyber Threat Knowledge Graph", fontsize=14)
-    return fig
+    _, labels, topic_map = perform_clustering(sentences)
+    graph = build_cti_graph(entities_df)
+    return {"entities": entities_df, "sentences": sentences, "graph": graph, "cluster_labels": labels, "topic_map": topic_map}
