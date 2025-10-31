@@ -1,80 +1,29 @@
+import streamlit as st
+from nlp_module import process_cti_data
 import pandas as pd
-import nltk
-import io
-import networkx as nx
-from pyvis.network import Network
-from transformers import pipeline
 
-# Ensure NLTK tokenizer is available
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt")
+st.set_page_config(page_title="CTI Knowledge Graph Analyzer", layout="wide")
 
-def split_into_sentences(text):
-    return nltk.sent_tokenize(text)
+st.title("🧠 Cyber Threat Intelligence (CTI) Knowledge Graph Analyzer")
 
-# Load NLP pipelines
-ner_pipeline = pipeline("ner", grouped_entities=True)
-sentiment_pipeline = pipeline("sentiment-analysis")
+uploaded_file = st.file_uploader("Upload CTI Report (PDF, TXT, or CSV)", type=["pdf", "txt", "csv"])
+process_button = st.button("Process Report")
 
-def extract_text(file):
-    """Extract text from CSV, TXT, or PDF."""
-    if file.name.endswith(".csv"):
-        df = pd.read_csv(file)
-        text = " ".join(df.astype(str).fillna("").values.flatten())
-    elif file.name.endswith(".txt"):
-        text = file.read().decode("utf-8", errors="ignore")
-    elif file.name.endswith(".pdf"):
-        import PyPDF2
-        reader = PyPDF2.PdfReader(file)
-        text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
-    else:
-        text = ""
-    return text
+if process_button and uploaded_file:
+    try:
+        result = process_cti_data(uploaded_file)
+        st.success("✅ Processing complete!")
 
-def build_knowledge_graph(entities):
-    """Create an interactive knowledge graph using PyVis."""
-    G = nx.Graph()
+        st.header("Extracted Entities")
+        st.dataframe(result["entities"])
 
-    for ent in entities:
-        entity_type = ent.get("entity_group", "Unknown")
-        word = ent.get("word", "")
-        if not word.strip():
-            continue
-        G.add_node(entity_type, color="#007ACC", shape="ellipse")
-        G.add_node(word, color="#00B4D8", shape="dot")
-        G.add_edge(entity_type, word)
+        st.header("Sentiment Summary")
+        st.bar_chart(result["sentiment_summary"].set_index("Sentiment"))
 
-    net = Network(height="600px", width="100%", bgcolor="#0e1117", font_color="white")
-    net.from_nx(G)
-    net.toggle_physics(True)
-    return net.generate_html()
+        st.header("Knowledge Graph Visualization")
+        st.markdown(f'<iframe src="{result["graph_html"]}" width="100%" height="600"></iframe>', unsafe_allow_html=True)
 
-def process_cti_data(uploaded_file):
-    """Main NLP processing pipeline."""
-    text = extract_text(uploaded_file)
-    if not text.strip():
-        raise ValueError("No readable text found in the uploaded file.")
+        st.image(result["graph_img"], caption="Static Knowledge Graph", use_container_width=True)
 
-    sentences = split_into_sentences(text)
-
-    # Named Entity Recognition
-    entities = []
-    for sent in sentences[:50]:  # limited for performance
-        entities.extend(ner_pipeline(sent))
-
-    # Sentiment Analysis
-    sentiments = sentiment_pipeline(sentences[:50])
-    sentiment_df = pd.DataFrame(sentiments)
-    sentiment_summary = sentiment_df["label"].value_counts().reset_index()
-    sentiment_summary.columns = ["Sentiment", "Count"]
-
-    # Knowledge Graph
-    graph_html = build_knowledge_graph(entities)
-
-    return {
-        "entities": pd.DataFrame(entities),
-        "sentiment_summary": sentiment_summary,
-        "graph_html": graph_html
-    }
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
