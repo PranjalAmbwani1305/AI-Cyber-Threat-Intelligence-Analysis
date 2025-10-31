@@ -1,214 +1,150 @@
-import warnings
-import re
-import nltk
+import streamlit as st
 import pandas as pd
-import igraph as ig
-from PyPDF2 import PdfReader
-from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
-from sentence_transformers import SentenceTransformer
-from sklearn.cluster import DBSCAN
+import networkx as nx
+import matplotlib.pyplot as plt
+from io import BytesIO
 
-# ---------------- SETUP ----------------
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
+# Import your NLP logic
+from nlp_logic import (
+    extract_pdf_text,
+    process_cti_pdf,
+    split_into_sentences,
+    perform_clustering,
+    build_cti_graph
+)
 
-MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
-NER_INITIALIZED = False
-EMBEDDING_INITIALIZED = False
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="AI Cyber Threat Intelligence Dashboard", layout="wide")
 
-print("[INFO] Loading models...")
+st.title("AI Cyber Threat Intelligence Dashboard")
+st.write("Transform unstructured or structured Cyber Threat Intelligence (CTI) data into actionable insights using advanced NLP, clustering, and knowledge graph analysis.")
 
-# ---------------- FIX NLTK TOKENIZER ----------------
-# Ensures both 'punkt' and new 'punkt_tab' are available
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt", quiet=True)
+# ---------------- SIDEBAR ----------------
+st.sidebar.header("Upload CTI Report")
+uploaded_file = st.sidebar.file_uploader(
+    "Choose a report file", 
+    type=["pdf", "csv", "xlsx", "txt"],
+    help="Supports structured logs (CSV/XLSX) and unstructured text (PDF/TXT)"
+)
 
-try:
-    nltk.data.find("tokenizers/punkt_tab")
-except LookupError:
-    nltk.download("punkt_tab", quiet=True)
+# ---------------- HANDLER ----------------
+if uploaded_file:
+    st.info(f"Processing `{uploaded_file.name}`...")
 
-nltk.data.path.append("/tmp/nltk_data")
-
-# ---------------- LOAD MODELS ----------------
-try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
-    ner_pipeline = pipeline(
-        "token-classification",
-        model=model,
-        tokenizer=tokenizer,
-        aggregation_strategy="simple"
-    )
-    NER_INITIALIZED = True
-    print("[OK] SecureBERT-NER loaded successfully.")
-except Exception as e:
-    print(f"[ERROR] Failed to load NER model: {e}")
-
-try:
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-    EMBEDDING_INITIALIZED = True
-    print("[OK] SentenceTransformer loaded successfully.")
-except Exception as e:
-    print(f"[ERROR] Failed to load SentenceTransformer: {e}")
-
-# ---------------- UTILITIES ----------------
-def extract_pdf_text(pdf_file):
-    """Extract text from a PDF file."""
-    text = ""
-    try:
-        reader = PdfReader(pdf_file)
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    except Exception as e:
-        print(f"[ERROR] Reading PDF failed: {e}")
-    return text.strip()
-
-
-def split_into_sentences(text):
-    """Split text into clean sentences."""
-    if not text or not isinstance(text, str):
-        return []
-    clean_text = re.sub(r"\s+", " ", text)
-    for res in ["punkt", "punkt_tab"]:
-        try:
-            nltk.data.find(f"tokenizers/{res}")
-        except LookupError:
-            nltk.download(res, quiet=True)
-    sentences = nltk.sent_tokenize(clean_text)
-    return [s.strip() for s in sentences if s.strip()]
-
-
-def chunk_text(text, max_length=512, overlap=50):
-    """Split text into overlapping token chunks for NER."""
-    if not NER_INITIALIZED or not text:
-        return []
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-    chunks = [
-        tokenizer.decode(tokens[i:i + max_length])
-        for i in range(0, len(tokens), max_length - overlap)
-    ]
-    return chunks
-
-# ---------------- KNOWLEDGE GRAPH ----------------
-def build_cti_graph(entities, labels):
-    """Build a directed CTI knowledge graph based on entity sequences."""
-    G = ig.Graph(directed=True)
-    if not entities:
-        return G
-
-    G.add_vertices(len(entities))
-    G.vs["name"] = entities
-    G.vs["label"] = entities
-    G.vs["type"] = labels
-
-    color_map = {
-        "ACT": "#1f78b4",
-        "TOOL": "#33a02c",
-        "IDTY": "#ff7f00",
-        "APT": "#e31a1c",
-        "MALWARE": "#fb9a99",
-        "IP": "#fdbf6f",
-        "DOMAIN": "#b2df8a",
-        "CVE": "#ffff99",
-        "URL": "#ff7f00"
-    }
-    G.vs["color"] = [color_map.get(l, "#a6cee3") for l in labels]
-
-    edges, relations = [], []
-    for i in range(len(entities) - 1):
-        l1, l2 = labels[i], labels[i + 1]
-        relation = "related_to"
-        if l1 == "IDTY" and l2 == "ACT":
-            relation = "performs_ttp"
-        elif l1 == "ACT" and l2 == "TOOL":
-            relation = "uses_tool"
-        elif l1 == "APT" and l2 == "MALWARE":
-            relation = "uses_malware"
-        elif l1 == "MALWARE" and l2 in ["IP", "DOMAIN"]:
-            relation = "connects_to"
-        elif l1 == "VULID" and l2 in ["OS", "TOOL"]:
-            relation = "affects"
-        edges.append((i, i + 1))
-        relations.append(relation)
-
-    G.add_edges(edges)
-    G.es["label"] = relations
-    return G
-
-
-# ---------------- CLUSTERING ----------------
-def perform_clustering(sentences):
-    """Perform semantic clustering using SentenceTransformer + DBSCAN."""
-    if not sentences or not EMBEDDING_INITIALIZED:
-        return None, None, {}
-
-    embeddings = embedding_model.encode(sentences)
-    dbscan = DBSCAN(eps=1.0, min_samples=2)
-    labels = dbscan.fit_predict(embeddings)
-
-    topic_map = {
-        cid: f"Topic {cid}" if cid != -1 else "Outliers"
-        for cid in set(labels)
-    }
-    return embeddings, labels, topic_map
-
-
-# ---------------- MAIN PROCESSOR ----------------
-def process_cti_pdf(file_path):
-    """
-    Process a PDF CTI report:
-    1. Extract text
-    2. Perform NER
-    3. Build CTI knowledge graph
-    4. Optionally cluster sentences
-    """
-    print(f"[INFO] Processing {file_path}...")
-    text = extract_pdf_text(file_path)
-    sentences = split_into_sentences(text)
-    chunks = chunk_text(text)
-
-    ner_results = []
-    if NER_INITIALIZED and chunks:
-        for chunk in chunks:
-            try:
-                ner_results.extend(ner_pipeline(chunk))
-            except Exception as e:
-                print(f"[WARN] NER chunk failed: {e}")
-                continue
-
-    if ner_results:
-        df = pd.DataFrame(ner_results).rename(
-            columns={"word": "Entity", "entity_group": "Type"}
-        )
-        df["Score"] = df["score"].round(3)
-        G = build_cti_graph(df["Entity"].tolist(), df["Type"].tolist())
+    # --- TEXT EXTRACTION ---
+    if uploaded_file.name.endswith(".pdf"):
+        text = extract_pdf_text(uploaded_file)
+        mode = "unstructured"
+    elif uploaded_file.name.endswith(".txt"):
+        text = uploaded_file.read().decode("utf-8", errors="ignore")
+        mode = "unstructured"
+    elif uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        text = " ".join(df.astype(str).values.flatten())
+        mode = "structured"
+    elif uploaded_file.name.endswith(".xlsx"):
+        df = pd.read_excel(uploaded_file)
+        text = " ".join(df.astype(str).values.flatten())
+        mode = "structured"
     else:
-        df = pd.DataFrame(columns=["Entity", "Type", "Score"])
-        G = ig.Graph(directed=True)
+        st.error("Unsupported file type.")
+        st.stop()
 
-    _, cluster_labels, topic_map = perform_clustering(sentences)
+    if not text.strip():
+        st.error("No readable text found.")
+        st.stop()
 
-    print(f"[DONE] Extracted {len(df)} entities, {len(sentences)} sentences.")
-    return {
-        "entities": df,
-        "graph": G,
-        "sentences": sentences,
-        "cluster_labels": cluster_labels,
-        "topic_map": topic_map
-    }
+    st.success(f"✅ Text extracted successfully from {mode.upper()} data.")
+    st.download_button("Download Extracted Text", text, file_name="extracted_text.txt")
 
-# ---------------- DEMO ----------------
-if __name__ == "__main__":
-    pdf_path = "sample_cti_report.pdf"
-    result = process_cti_pdf(pdf_path)
+    # --- PROCESSING ---
+    with st.spinner("Running NLP and graph analysis..."):
+        result = process_cti_pdf(BytesIO(uploaded_file.read()) if uploaded_file.name.endswith(".pdf") else uploaded_file)
 
-    print("\n=== Extracted Entities ===")
-    print(result["entities"].head())
+    # --- FALLBACK for structured data (no NER results) ---
+    if mode == "structured" and (result["entities"].empty or len(result["graph"].vs) == 0):
+        entities = []
+        if 'User' in df.columns:
+            entities += df['User'].dropna().unique().tolist()
+        if 'Src_IP' in df.columns:
+            entities += df['Src_IP'].dropna().unique().tolist()
+        if 'Dest_IP' in df.columns:
+            entities += df['Dest_IP'].dropna().unique().tolist()
+        if 'Description' in df.columns:
+            entities += [w for w in " ".join(df['Description'].astype(str)).split() if len(w) > 6]
 
-    print("\n=== Graph Summary ===")
-    print(result["graph"].summary())
+        # Generate synthetic entity table
+        structured_df = pd.DataFrame({
+            "Entity": pd.Series(entities[:200]),
+            "Type": ["STRUCTURED_ENTITY"] * min(200, len(entities)),
+            "Score": [1.0] * min(200, len(entities))
+        })
+        result["entities"] = structured_df
+        result["graph"] = build_cti_graph(structured_df["Entity"].tolist(), structured_df["Type"].tolist())
+
+    # --- SUMMARY ---
+    st.subheader("Analysis Summary")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Entities Extracted", len(result["entities"]))
+    col2.metric("Sentences Processed", len(result["sentences"]))
+    col3.metric("Relationships Identified", len(result["graph"].es))
+
+    # ---------------- TABS ----------------
+    tab1, tab2, tab3, tab4 = st.tabs(["Entities", "Sentence Clustering", "Knowledge Graph", "Raw Text"])
+
+    # --- ENTITIES ---
+    with tab1:
+        st.subheader("Entities Extracted")
+        entities_df = result["entities"]
+        if not entities_df.empty:
+            st.dataframe(entities_df, use_container_width=True)
+            st.bar_chart(entities_df["Type"].value_counts())
+        else:
+            st.info("No entities found.")
+    
+    # --- CLUSTERING ---
+    with tab2:
+        st.subheader("Sentence Clustering")
+        _, cluster_labels, topic_map = perform_clustering(result["sentences"])
+        if cluster_labels is not None:
+            cluster_df = pd.DataFrame({
+                "Sentence": result["sentences"],
+                "Cluster": cluster_labels
+            })
+            st.dataframe(cluster_df, use_container_width=True)
+        else:
+            st.info("No clusters detected.")
+
+    # --- KNOWLEDGE GRAPH ---
+    with tab3:
+        st.subheader("Cyber Threat Knowledge Graph")
+        G = result["graph"]
+        if len(G.vs) > 0:
+            nxG = nx.Graph()
+            for v in G.vs:
+                nxG.add_node(v["name"], label=v["type"])
+            for e in G.es:
+                src, tgt = e.tuple
+                nxG.add_edge(G.vs[src]["name"], G.vs[tgt]["name"], label=e["label"])
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            nx.draw_networkx(
+                nxG, ax=ax, with_labels=True, 
+                node_color="#a6cee3", edge_color="#999999", font_size=8
+            )
+            st.pyplot(fig)
+        else:
+            st.warning("Graph could not be generated — insufficient relationship data.")
+
+    # --- RAW TEXT ---
+    with tab4:
+        st.subheader("Raw Extracted Text")
+        st.text_area("Extracted Text Preview", text[:5000], height=300)
+        st.download_button("Download Full Text", text, file_name="raw_text.txt")
+
+else:
+    st.info("Upload a CTI report from the sidebar to start analysis.")
+
+# ---------------- FOOTER ----------------
+st.markdown("---")
+st.caption("AI Cyber Threat Intelligence Dashboard — SecureBERT & SentenceTransformer © 2025")
