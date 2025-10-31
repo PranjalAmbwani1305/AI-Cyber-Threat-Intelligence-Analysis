@@ -1,56 +1,53 @@
-# app.py
 import streamlit as st
-import pandas as pd
-from nlp_logic import load_model, extract_text, chunk_text, build_structured_cti_graph, plot_cti_graph_pyvis
+import matplotlib.pyplot as plt
+import igraph as ig
+from nlp_logic import extract_entities, analyze_sentiment, topic_modeling
+from PyPDF2 import PdfReader
 
-st.set_page_config(page_title="Cyber Threat Intelligence Dashboard", layout="wide")
+st.set_page_config(page_title="🧠 Cyber Threat Intelligence with NLP", layout="wide")
 
-st.title("🛡️ Cyber Threat Intelligence (CTI) Dashboard")
-st.caption("AI-powered NLP + Knowledge Graph for Cyber Analysis")
+st.title("🧠 AI-Driven Cyber Threat Intelligence Analyzer")
+st.markdown("Upload a **CTI report (PDF, CSV, or TXT)** to extract entities, analyze sentiment, and visualize a knowledge graph.")
 
-# -------------------- MODEL LOADING --------------------
-@st.cache_resource
-def init_model():
-    return load_model()
-
-tokenizer, ner_pipeline = init_model()
-
-tabs = st.tabs(["📁 Upload & Extract", "🧠 Entity Recognition", "🌐 Knowledge Graph"])
-
-# -------------------- TAB 1 --------------------
-with tabs[0]:
-    st.header("Upload Cyber Threat Report")
-    uploaded_file = st.file_uploader("Upload CSV, PDF, or TXT", type=["csv", "pdf", "txt"])
-    if uploaded_file:
-        text = extract_text(uploaded_file)
-        st.session_state["text"] = text
-        st.success("✅ File processed successfully!")
-
-# -------------------- TAB 2 --------------------
-with tabs[1]:
-    st.header("Entity Extraction (NER)")
-    if "text" not in st.session_state:
-        st.warning("Please upload a file first.")
+def extract_text(uploaded_file):
+    if uploaded_file.name.endswith(".pdf"):
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
     else:
-        text = st.session_state["text"]
-        chunks = chunk_text(text, tokenizer)
-        st.write(f"Processing {len(chunks)} chunks...")
-        results = [ent for chunk in chunks for ent in ner_pipeline(chunk)]
-        df = pd.DataFrame(results).rename(columns={"word": "Entity", "entity_group": "Type", "score": "Score"})
-        df["Score"] = df["Score"].round(3)
-        st.dataframe(df, use_container_width=True)
-        st.session_state["entities"] = df
+        return uploaded_file.read().decode("utf-8")
 
-# -------------------- TAB 3 --------------------
-with tabs[2]:
-    st.header("CTI Knowledge Graph")
-    st.markdown("### 🔗 Visual Cyber Flow — Interactive Graph")
+uploaded_file = st.file_uploader("Upload Report", type=["pdf", "txt", "csv"])
+if uploaded_file:
+    text = extract_text(uploaded_file)
+    st.subheader("📄 Extracted Text Sample")
+    st.write(text[:1000] + "...")
 
-    G = build_structured_cti_graph()
-    html_path = plot_cti_graph_pyvis(G)
+    with st.spinner("Analyzing NLP Layers..."):
+        entities_df = extract_entities(text)
+        sentiment = analyze_sentiment(text)
+        topic = topic_modeling(text)
 
-    with open(html_path, "r", encoding="utf-8") as f:
-        html_content = f.read()
-    st.components.v1.html(html_content, height=720, scrolling=True)
+    st.markdown("### 🧩 Named Entities Extracted (NER)")
+    st.dataframe(entities_df)
 
-    st.info("💡 Relationships are directional — hover or click nodes for more info.")
+    st.markdown("### 💬 Sentiment & Topic")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Sentiment", sentiment["label"])
+    with col2:
+        st.metric("Main Topic", f"{topic['topic']} ({topic['confidence']*100:.1f}%)")
+
+    st.markdown("### 🌐 Knowledge Graph (Prototype)")
+    G = ig.Graph(directed=True)
+    for _, row in entities_df.iterrows():
+        G.add_vertex(row["Entity"])
+    edges = [(entities_df.iloc[i]["Entity"], entities_df.iloc[i + 1]["Entity"]) for i in range(len(entities_df) - 1)]
+    G.add_edges(edges)
+
+    layout = G.layout("circle")
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ig.plot(G, target=ax, layout=layout, vertex_label=G.vs["name"], vertex_color="lightblue", vertex_size=20)
+    st.pyplot(fig)
