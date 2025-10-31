@@ -1,75 +1,46 @@
 import streamlit as st
 import pandas as pd
-from CTI import extract_threat_intel
-from NER_Transformer import extract_entities
-from Clustering_Prototype import perform_clustering
-from Knowledge_graph_gradio_app import build_knowledge_graph
-from Text_classification_Sentiment import analyze_sentiment
-from Topic_Modelling_Sentence_Analysis_ import topic_modelling_analysis
+from nlp_logic import extract_text, extract_entities, extract_keywords, topic_modeling, build_cti_graph, plot_cti_graph
 
-st.set_page_config(
-    page_title="Cyber Threat Intelligence (CTI) Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Cyber Threat Intelligence Analyzer", layout="wide")
 
-st.title("Cyber Threat Intelligence (CTI) Dashboard")
+st.title("🧠 Cyber Threat Intelligence (CTI) Analyzer")
+st.markdown("Analyze PDF or CSV reports to extract **threat entities**, **topics**, and build a **knowledge graph**.")
 
-st.sidebar.header("File Upload")
-uploaded_file = st.sidebar.file_uploader("Upload Threat Feed (.csv or .pdf)", type=["csv", "pdf"])
+uploaded_file = st.file_uploader("📂 Upload CTI Report (PDF or CSV)", type=["pdf", "csv"])
 
-if uploaded_file is not None:
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+if uploaded_file:
+    with st.spinner("Extracting text..."):
+        text = extract_text(uploaded_file)
+
+    if text.strip() == "":
+        st.error("⚠️ Could not extract text from the file.")
     else:
-        df = extract_threat_intel(uploaded_file)
+        st.success("✅ Text extracted successfully.")
+        st.write("---")
 
-    st.sidebar.success(f"File uploaded: {uploaded_file.name}")
-else:
-    st.warning("Please upload a threat feed (.csv or .pdf) to continue.")
-    st.stop()
+        tab1, tab2, tab3, tab4 = st.tabs(["Entities", "Keywords", "Topics", "Knowledge Graph"])
 
-tabs = st.tabs(["Overview", "NER", "Knowledge Graph", "Threat Feed", "Clustering", "Sentiment", "Topic Modelling"])
+        with tab1:
+            st.subheader("Named Entity Recognition (NER)")
+            df_entities = extract_entities(text)
+            st.dataframe(df_entities, use_container_width=True)
 
-with tabs[0]:
-    st.subheader("Overview")
-    st.write("### File Summary")
-    st.write(f"Rows: {df.shape[0]} | Columns: {df.shape[1]}")
-    st.dataframe(df.head())
+        with tab2:
+            st.subheader("Keyword Extraction")
+            df_keywords = extract_keywords(text)
+            st.dataframe(df_keywords, use_container_width=True)
 
-with tabs[1]:
-    st.subheader("Named Entity Recognition (NER)")
-    entities = extract_entities(df)
-    st.dataframe(entities)
+        with tab3:
+            st.subheader("Topic Modeling (LDA)")
+            df_topics = topic_modeling(text)
+            st.dataframe(df_topics, use_container_width=True)
 
-with tabs[2]:
-    st.subheader("Knowledge Graph")
-    graph_fig = build_knowledge_graph(df)
-    st.pyplot(graph_fig)
-
-with tabs[3]:
-    st.subheader("Threat Feed")
-    indicator_type = st.selectbox("Indicator Type", ["All"] + list(df["Type"].unique()))
-    confidence_filter = st.slider("Confidence Level", 0, 100, (0, 100))
-    filtered_df = df[
-        (df["Confidence"].between(confidence_filter[0], confidence_filter[1])) &
-        ((df["Type"] == indicator_type) | (indicator_type == "All"))
-    ]
-    st.dataframe(filtered_df)
-    st.write(f"Indicator Count: {len(filtered_df)}")
-    st.write(f"Average Confidence: {filtered_df['Confidence'].mean():.2f}")
-
-with tabs[4]:
-    st.subheader("Clustering Analysis")
-    cluster_fig = perform_clustering(df)
-    st.pyplot(cluster_fig)
-
-with tabs[5]:
-    st.subheader("Sentiment Analysis")
-    sentiment_df = analyze_sentiment(df)
-    st.dataframe(sentiment_df)
-
-with tabs[6]:
-    st.subheader("Topic Modelling & Sentence Analysis")
-    topic_results = topic_modelling_analysis(df)
-    st.dataframe(topic_results)
+        with tab4:
+            st.subheader("Knowledge Graph")
+            if not df_entities.empty:
+                G = build_cti_graph(df_entities)
+                fig = plot_cti_graph(G)
+                st.pyplot(fig)
+            else:
+                st.warning("No entities detected to build a graph.")
