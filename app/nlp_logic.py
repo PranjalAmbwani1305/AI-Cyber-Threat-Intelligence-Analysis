@@ -1,13 +1,3 @@
-"""
-CTI (Cyber Threat Intelligence) PDF Processor
----------------------------------------------
-Extracts text from CTI reports, performs NER using SecureBERT,
-builds a knowledge graph, and clusters sentences semantically.
-
-Dependencies:
-    pip install torch transformers sentence-transformers nltk PyPDF2 igraph scikit-learn pandas matplotlib
-"""
-
 import warnings
 import re
 import nltk
