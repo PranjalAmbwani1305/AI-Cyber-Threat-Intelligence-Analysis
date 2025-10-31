@@ -1,89 +1,158 @@
-# main.py
 import streamlit as st
 import pandas as pd
-from nlp_logic import extract_text
-from transformers import pipeline
-import networkx as nx
-from pyvis.network import Network
-import nltk
+from nlp_logic import load_model, extract_text, chunk_text, build_cti_graph, plot_cti_graph
 
-# Ensure tokenizer available
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt")
+# -------------------------------
+# PAGE CONFIGURATION
+# -------------------------------
+st.set_page_config(page_title="Cyber Threat Intelligence Dashboard", layout="wide")
 
-# -------------------------
-# Streamlit Page Config
-# -------------------------
-st.set_page_config(page_title="Cyber Threat Intelligence Knowledge Graph", layout="wide")
+# -------------------------------
+# PAGE HEADER
+# -------------------------------
+st.title("Cyber Threat Intelligence (CTI) Dashboard")
 
-st.title("Cyber Threat Intelligence (CTI) Knowledge Graph")
-st.write("Upload a CTI report in CSV or PDF format to extract cyber entities and visualize relationships.")
-
-# -------------------------
-# Load NLP Models
-# -------------------------
+# -------------------------------
+# LOAD NLP MODEL
+# -------------------------------
 @st.cache_resource
-def load_models():
-    ner_pipeline = pipeline("ner", grouped_entities=True)
-    sentiment_pipeline = pipeline("sentiment-analysis")
-    return ner_pipeline, sentiment_pipeline
+def init_model():
+    return load_model()
 
-ner_pipeline, sentiment_pipeline = load_models()
+tokenizer, ner_pipeline = init_model()
 
-# -------------------------
-# File Upload
-# -------------------------
-uploaded_file = st.file_uploader("Upload CTI Report", type=["csv", "pdf", "txt"])
+# -------------------------------
+# SIDEBAR - FILE UPLOAD
+# -------------------------------
+st.sidebar.header("File Upload")
+uploaded_file = st.sidebar.file_uploader("Upload Threat Feed (.csv or .pdf)", type=["csv", "pdf"])
 
-if uploaded_file:
-    with st.spinner("Extracting text from the file..."):
-        text = extract_text(uploaded_file)
+# -------------------------------
+# TAB NAVIGATION
+# -------------------------------
+tabs = st.tabs(["Overview", "NER", "Knowledge Graph", "Threat Feed"])
 
-    if not text:
-        st.error("No readable text found in the uploaded file.")
-    else:
-        st.success("File processed successfully.")
+# -------------------------------------
+# TAB 1 - OVERVIEW
+# -------------------------------------
+with tabs[0]:
+    st.header("Overview")
+    st.markdown("""
+    This dashboard performs **Cyber Threat Intelligence (CTI)** analysis using NLP.  
+    Upload **CSV or PDF** threat reports, extract entities such as **IPs, domains, and malware**,  
+    and visualize connections through a **knowledge graph**.
+    """)
 
-        # Split into sentences
-        sentences = nltk.sent_tokenize(text)
-        sample_sentences = sentences[:50]
+# -------------------------------------
+# TAB 2 - NER (Entity Extraction)
+# -------------------------------------
+with tabs[1]:
+    st.header("Named Entity Recognition (NER) Analysis")
 
-        # Run NLP
-        with st.spinner("Performing Named Entity Recognition..."):
-            entities = []
-            for sent in sample_sentences:
-                entities.extend(ner_pipeline(sent))
-
-        if not entities:
-            st.warning("No entities were detected.")
+    if uploaded_file:
+        if uploaded_file.name.endswith(".csv"):
+            text = "\n".join(pd.read_csv(uploaded_file, encoding="utf-8", dtype=str).astype(str).fillna("").values.flatten())
         else:
-            df = pd.DataFrame(entities)
-            df = df.rename(columns={"word": "Entity", "entity_group": "Type", "score": "Score"})
-            df["Score"] = df["Score"].round(3)
+            text = extract_text(uploaded_file)
 
-            st.subheader("Extracted Entities")
-            st.dataframe(df[["Entity", "Type", "Score"]], use_container_width=True)
+        if not text.strip():
+            st.error("No text could be extracted.")
+        else:
+            st.success("Text extracted successfully!")
 
-            # -------------------------
-            # Build Knowledge Graph
-            # -------------------------
-            G = nx.Graph()
+            chunks = chunk_text(text, tokenizer)
+            st.write(f"Processing {len(chunks)} text chunks...")
 
-            for _, row in df.iterrows():
-                entity = row["Entity"]
-                entity_type = row["Type"]
-                G.add_node(entity, group=entity_type)
-                G.add_edge(entity_type, entity)
+            results = []
+            for chunk in chunks:
+                results.extend(ner_pipeline(chunk))
 
-            net = Network(height="600px", width="100%", bgcolor="#0e1117", font_color="white")
-            net.from_nx(G)
-            net.toggle_physics(True)
-            html_file = "cti_graph.html"
-            net.save_graph(html_file)
+            if not results:
+                st.warning("No entities found in document.")
+            else:
+                df_entities = pd.DataFrame(results)
+                df_entities = df_entities.rename(columns={"word": "Entity", "entity_group": "Type", "score": "Confidence"})
+                df_entities["Confidence"] = df_entities["Confidence"].round(3)
 
-            st.subheader("Knowledge Graph Visualization")
-            with open(html_file, "r", encoding="utf-8") as f:
-                graph_html = f.read()
-            st.components.v1.html(graph_html, height=600, scrolling=True)
+                st.dataframe(df_entities, use_container_width=True)
+
+# -------------------------------------
+# TAB 3 - KNOWLEDGE GRAPH
+# -------------------------------------
+with tabs[2]:
+    st.header("Knowledge Graph")
+
+    if uploaded_file:
+        if uploaded_file.name.endswith(".csv"):
+            text = "\n".join(pd.read_csv(uploaded_file, encoding="utf-8", dtype=str).astype(str).fillna("").values.flatten())
+        else:
+            text = extract_text(uploaded_file)
+
+        if text.strip():
+            chunks = chunk_text(text, tokenizer)
+            results = []
+            for chunk in chunks:
+                results.extend(ner_pipeline(chunk))
+
+            if results:
+                df_graph = pd.DataFrame(results)
+                df_graph = df_graph.rename(columns={"word": "Entity", "entity_group": "Type"})
+                G = build_cti_graph(df_graph["Entity"].tolist(), df_graph["Type"].tolist())
+                fig = plot_cti_graph(G)
+                st.pyplot(fig)
+            else:
+                st.warning("No graph data available.")
+        else:
+            st.warning("Upload a valid file to generate graph.")
+    else:
+        st.info("Please upload a file to generate the graph.")
+
+# -------------------------------------
+# TAB 4 - THREAT FEED
+# -------------------------------------
+with tabs[3]:
+    st.header("Threat Feed")
+
+    if uploaded_file:
+        if uploaded_file.name.endswith(".csv"):
+            try:
+                df_feed = pd.read_csv(uploaded_file)
+            except pd.errors.EmptyDataError:
+                st.error("The CSV file is empty or invalid.")
+                df_feed = None
+
+            if df_feed is not None and not df_feed.empty:
+                # Filters
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    indicator_type = st.selectbox("Indicator Type", ["All"] + sorted(df_feed["Type"].unique()))
+                with col2:
+                    confidence_filter = st.selectbox("Confidence", ["All", "High", "Medium", "Low"])
+                with col3:
+                    source_filter = st.selectbox("Source", ["All"] + sorted(df_feed["Source"].astype(str).unique()))
+
+                if indicator_type != "All":
+                    df_feed = df_feed[df_feed["Type"] == indicator_type]
+                if confidence_filter != "All":
+                    if confidence_filter == "High":
+                        df_feed = df_feed[df_feed["Confidence"] > 80]
+                    elif confidence_filter == "Medium":
+                        df_feed = df_feed[(df_feed["Confidence"] > 40) & (df_feed["Confidence"] <= 80)]
+                    else:
+                        df_feed = df_feed[df_feed["Confidence"] <= 40]
+                if source_filter != "All":
+                    df_feed = df_feed[df_feed["Source"].astype(str) == source_filter]
+
+                st.dataframe(df_feed, use_container_width=True)
+
+                col4, col5 = st.columns(2)
+                with col4:
+                    st.metric("Indicator Count", len(df_feed))
+                with col5:
+                    st.metric("Average Confidence", round(df_feed["Confidence"].mean(), 2))
+            else:
+                st.warning("No valid data found in CSV file.")
+        else:
+            st.info("Threat feed table is only available for CSV uploads.")
+    else:
+        st.info("Upload a CSV or PDF to begin analysis.")
