@@ -1,46 +1,57 @@
 import streamlit as st
 import pandas as pd
-import networkx as nx
 import matplotlib.pyplot as plt
+import networkx as nx
 from io import BytesIO
 import traceback
-from nlp_logic import Textract_pdf_text, process_cti_pdf, split_into_sentences, perform_clustering, build_cti_graph
+import os, sys
 
+# === Ensure local imports work (for Streamlit Cloud or Colab) ===
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.append(APP_DIR)
 
-
-# ======= PAGE CONFIG =======
-st.set_page_config(
-    page_title="AI Cyber Threat Intelligence Dashboard",
-    layout="wide",
+# === Correct imports from nlp_logic ===
+from nlp_logic import (
+    extract_pdf_text,
+    process_cti_pdf,
+    split_into_sentences,
+    perform_clustering,
+    build_cti_graph
 )
 
-# ======= SIDEBAR =======
+# === Streamlit Page Configuration ===
+st.set_page_config(
+    page_title="AI Cyber Threat Intelligence Dashboard",
+    layout="wide"
+)
+
+# === Sidebar ===
 with st.sidebar:
-    st.title("Upload CTI Data")
+    st.title("Upload CTI Report")
     uploaded_file = st.file_uploader(
-        "Select a report file",
-        type=["pdf", "csv", "txt", "xlsx"],
+        "Choose a report file",
+        type=["pdf", "csv", "xlsx", "txt"],
         help="Upload unstructured (PDF/TXT) or structured (CSV/XLSX) cyber threat intelligence data."
     )
     st.markdown("---")
-    st.caption("AI Cyber Threat Intelligence Pipeline")
+    st.caption("AI Cyber Threat Intelligence Suite © 2025")
 
-# ======= MAIN HEADER =======
+# === Header ===
 st.title("AI Cyber Threat Intelligence Dashboard")
 st.markdown("""
-This dashboard transforms raw cyber threat intelligence (CTI) data into structured insights 
-using SecureBERT, Sentence Transformers, and Knowledge Graph analytics.
+Transform unstructured or structured Cyber Threat Intelligence (CTI) data into actionable insights 
+using advanced NLP, clustering, and knowledge graph analysis.
 """)
 
-# ======= PROCESS FILE =======
+# === File Processing ===
 if uploaded_file:
     st.info(f"Processing `{uploaded_file.name}`...")
 
     try:
-        # ---------- Extract Text Based on File Type ----------
         file_ext = uploaded_file.name.split(".")[-1].lower()
-        text = ""
 
+        # ---- Extract text ----
         if file_ext == "pdf":
             text = extract_pdf_text(uploaded_file)
         elif file_ext in ["csv", "xlsx"]:
@@ -52,59 +63,58 @@ if uploaded_file:
             st.error("Unsupported file format.")
             st.stop()
 
-        # ---------- Split & Analyze ----------
+        # ---- Sentence splitting ----
         sentences = split_into_sentences(text)
 
-        with st.spinner("Running SecureBERT and Sentence Clustering..."):
+        # ---- Run NLP pipeline ----
+        with st.spinner("Analyzing with SecureBERT and building knowledge graph..."):
             result = process_cti_pdf(BytesIO(text.encode("utf-8")))
             entities_df = result["entities"]
             G = result["graph"]
             cluster_labels = result["cluster_labels"]
             topic_map = result["topic_map"]
 
-        # ---------- Overview Metrics ----------
-        st.subheader("Summary Overview")
+        # ---- Summary Overview ----
+        st.subheader("Analysis Summary")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Extracted Entities", len(entities_df))
-        col2.metric("Sentences", len(sentences))
-        col3.metric("Relationships", G.ecount() if G else 0)
+        col1.metric("Entities Extracted", len(entities_df))
+        col2.metric("Sentences Processed", len(sentences))
+        col3.metric("Relationships Identified", G.ecount() if G else 0)
 
-        # ---------- Tabs ----------
+        # ---- Tabs for analysis sections ----
         tab1, tab2, tab3, tab4 = st.tabs([
             "Entities",
-            "Sentence Clusters",
+            "Sentence Clustering",
             "Knowledge Graph",
             "Raw Text"
         ])
 
         # --- TAB 1: Entities ---
         with tab1:
-            st.subheader("Extracted Named Entities")
+            st.subheader("Named Entity Recognition (NER)")
             if not entities_df.empty:
                 st.dataframe(entities_df, use_container_width=True)
                 st.bar_chart(entities_df["Type"].value_counts())
                 st.download_button(
                     "Download Entities CSV",
                     entities_df.to_csv(index=False),
-                    file_name="extracted_entities.csv",
-                    mime="text/csv"
+                    "entities.csv"
                 )
             else:
-                st.warning("No entities detected in this file.")
+                st.warning("No entities were detected.")
 
-        # --- TAB 2: Sentence Clusters ---
+        # --- TAB 2: Clustering ---
         with tab2:
-            st.subheader("Semantic Clustering of Sentences")
+            st.subheader("Semantic Sentence Clustering")
             if cluster_labels is not None:
                 clusters_df = pd.DataFrame({
                     "Sentence": sentences,
                     "Cluster": cluster_labels
                 })
-                st.dataframe(clusters_df.head(25), use_container_width=True)
-                st.markdown("Cluster Distribution")
+                st.dataframe(clusters_df.head(20), use_container_width=True)
                 st.bar_chart(pd.Series(cluster_labels).value_counts())
             else:
-                st.info("No clustering information available.")
+                st.info("No clustering data available.")
 
         # --- TAB 3: Knowledge Graph ---
         with tab3:
@@ -123,35 +133,30 @@ if uploaded_file:
                     with_labels=True,
                     node_size=900,
                     font_size=8,
+                    font_weight="bold",
                     node_color="#42a5f5",
-                    edge_color="#424242",
-                    font_weight="bold"
+                    edge_color="#424242"
                 )
                 st.pyplot(fig)
             else:
-                st.warning("No graph could be generated.")
+                st.warning("Graph could not be generated.")
 
-        # --- TAB 4: Text ---
+        # --- TAB 4: Raw Text ---
         with tab4:
-            st.subheader("Extracted Report Text")
-            st.text_area("Text Preview", text[:6000], height=300)
-            st.download_button(
-                "Download Extracted Text",
-                text,
-                file_name="extracted_text.txt",
-                mime="text/plain"
-            )
+            st.subheader("Extracted CTI Report Text")
+            st.text_area("Report Content", text[:5000], height=300)
+            st.download_button("Download Extracted Text", text, file_name="cti_report_text.txt")
 
     except Exception as e:
-        st.error("Error during processing:")
+        st.error("An error occurred while processing the report:")
         st.code(traceback.format_exc())
 
 else:
-    st.info("Upload a CTI report using the sidebar to begin analysis.")
+    st.info("Upload a CTI report from the sidebar to start analysis.")
 
-# ======= FOOTER =======
+# === Footer ===
 st.markdown("---")
 st.markdown(
-    "<div style='text-align:center; color:gray'>© 2025 AI Cyber Threat Intelligence Suite | SecureBERT & SentenceTransformer Powered</div>",
+    "<div style='text-align:center; color:gray;'>AI Cyber Threat Intelligence Dashboard — SecureBERT & SentenceTransformer © 2025</div>",
     unsafe_allow_html=True,
 )
