@@ -25,26 +25,7 @@ try:
 except Exception as e:
     nlp = None
     st.error(f"SpaCy model 'en_core_web_sm' failed to load. Linguistic analysis will be disabled. ({e.__class__.__name__})")
-    
-    with st.expander("Tools: How to Fix the SpaCy Model Error in Cloud Environments (e.g., Streamlit Cloud)"):
-        st.markdown(
-            """
-            This usually happens because the large language model data is not installed alongside the library.
-            To fix this, you must ensure your environment's dependency file (`requirements.txt`) contains **both** `spacy` and the model name:
 
-            ```text
-            streamlit
-            pandas
-            numpy
-            igraph
-            matplotlib
-            spacy
-            en-core-web-sm
-            ```
-
-            **Action Required:** If you are running this in Streamlit Cloud, please update your `requirements.txt` file to include `en-core-web-sm` and redeploy the app.
-            """
-        )
 
 NER_MODEL_LOADED = True
 
@@ -102,7 +83,7 @@ def build_cti_knowledge_graph_igraph(df_entities):
             name_to_original_label[clean_ent] = lab
             unique_vertex_names.append(clean_ent)
     
-    G = ig.Graph(directed=True)
+    G = igraph.Graph(directed=True)
     G.add_vertices(len(unique_vertex_names))
     G.vs["name"] = unique_vertex_names
     G.vs["node_type"] = [name_to_original_label[name] for name in G.vs["name"]]
@@ -359,7 +340,7 @@ def build_mitre_mapping(df_entities):
 
 def linguistic_analysis_spacy(text):
     if not NLP_ENABLED:
-        return [], "<p>SpaCy model not loaded.</p>"
+        return [("Model not loaded", "N/A", "N/A")], "<p>SpaCy model not loaded.</p>"
     if not text.strip():
         return [], "<p>Please enter text for analysis.</p>"
         
@@ -383,7 +364,7 @@ if 'processed' not in st.session_state:
     st.session_state.structural_df = pd.DataFrame()
     st.session_state.graph = None
     st.session_state.processing_time = 0.0
-    st.session_state.input_mode = "Unstructured (PDF)"
+    st.session_state.input_mode = "Structured (Log/CSV/XLSX)" # Default to CSV/Log
     st.session_state.dependency_html = ""
     st.session_state.status_message = ""
     st.session_state.upload_key = 0 
@@ -397,6 +378,7 @@ with st.sidebar:
         "Current Input Mode:",
         ["Unstructured (PDF)", "Structured (Log/CSV/XLSX)"],
         key='input_mode',
+        index=1, # Index 1 = "Structured (Log/CSV/XLSX)"
         help="Select the file type you intend to upload. This changes the file selector."
     )
 
@@ -408,7 +390,7 @@ with st.sidebar:
         allowed_types = ["csv", "xlsx", "log"]
         upload_label = "Upload Log/Data File (CSV/XLSX/LOG)"
 
-    # 2. File Uploader (Moved to sidebar)
+    # 2. File Uploader (in sidebar)
     uploaded_file = st.file_uploader(
         upload_label,
         type=allowed_types,
@@ -418,7 +400,7 @@ with st.sidebar:
     # 3. Process Button
     process_button = st.button("Process Report", type="primary", use_container_width=True)
 
-    st.markdown("---")
+    st.write("---")
     st.header("Status")
     # 4. Status Box
     st.text_area(
@@ -427,7 +409,7 @@ with st.sidebar:
         height=100,
         disabled=True
     )
-    st.markdown("---")
+    st.write("---")
     
     st.header("2 Output & Export")
     
@@ -459,7 +441,7 @@ with st.sidebar:
 
 # Main Application Title
 st.title("Cyber Threat Intelligence (CTI) Knowledge Graph Analyzer")
-st.markdown("Upload a CTI report (PDF) or security logs (CSV/XLSX) in the sidebar to extract entities and visualize relationships.")
+st.write("Upload a CTI report (PDF) or security logs (CSV/XLSX) in the sidebar to extract entities and visualize relationships.")
 
 
 # --- Analysis Logic Triggered by Button ---
@@ -504,7 +486,6 @@ if process_button:
 
 # --- Main Content Tabs ---
 entity_count = len(st.session_state.entity_df)
-event_count = st.session_state.structural_df.loc[st.session_state.structural_df['Log Field'] == 'Total Event Count', 'Present in File'].iloc[0] if not st.session_state.structural_df.empty and 'Total Event Count' in st.session_state.structural_df['Log Field'].values else "---"
 
 tab_graph, tab_structural, tab_sentiment = st.tabs([
     "Knowledge Graph & Entities", 
@@ -513,12 +494,12 @@ tab_graph, tab_structural, tab_sentiment = st.tabs([
 ])
 
 with tab_graph:
-    st.markdown("### Step 1: Extracted Entities (NER Results)")
+    st.subheader("Step 1: Extracted Entities (NER Results)")
     
     if not st.session_state.processed:
         st.info("Upload a file in the sidebar and click 'Process Report' to populate this analysis.")
     else:
-        st.markdown(f"**{entity_count}** unique entities identified and normalized by the pipeline.")
+        st.write(f"**{entity_count}** unique entities identified and normalized by the pipeline.")
         
         st.dataframe(
             st.session_state.entity_df,
@@ -526,17 +507,17 @@ with tab_graph:
             hide_index=True
         )
 
-        st.divider()
+        st.write("---")
 
         st.subheader("2. MITRE ATT&CK Mapping & Classification")
-        st.markdown("Automatically associate extracted Actions and TTPs with standard MITRE Technique IDs.")
+        st.write("Automatically associate extracted Actions and TTPs with standard MITRE Technique IDs.")
         
         st.dataframe(build_mitre_mapping(st.session_state.entity_df), use_container_width=True, hide_index=True)
 
-        st.divider()
+        st.write("---")
 
         st.subheader("3. Interactive 1-Hop Knowledge Graph")
-        st.markdown("Pivot on any extracted entity to visualize its immediate network of connections.")
+        st.write("Pivot on any extracted entity to visualize its immediate network of connections.")
         
         col_select, col_query = st.columns([3, 1])
         with col_select:
@@ -548,7 +529,7 @@ with tab_graph:
             )
 
         with col_query:
-            st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True) 
+            st.write("<div style='height: 30px;'></div>", unsafe_allow_html=True) 
             graph_query_button = st.button("Generate Subgraph", key="query_graph", use_container_width=True)
 
         # Always check if processed flag is true before attempting to plot
@@ -563,7 +544,7 @@ with tab_graph:
 
 with tab_structural:
     st.header("Log File Schema and Completeness Triage")
-    st.markdown("Analyze log files (CSV, XLSX) to quickly assess **data quality**, **field presence**, and **completeness** before deeper analysis.")
+    st.write("Analyze log files (CSV, XLSX) to quickly assess **data quality**, **field presence**, and **completeness** before deeper analysis.")
 
     if st.session_state.input_mode == "Unstructured (PDF)":
         st.warning("Structural Analysis is only available for **Structured Inputs** (CSV/XLSX/LOG).")
@@ -578,7 +559,7 @@ with tab_structural:
 
 with tab_sentiment:
     st.header("Quick Text Utility: Security Classification and Syntax")
-    st.markdown("Instantly classify the security nature and sentiment of a single text snippet.")
+    st.write("Instantly classify the security nature and sentiment of a single text snippet.")
     
     quick_input = st.text_area(
         "Enter text for immediate analysis", 
@@ -594,7 +575,7 @@ with tab_sentiment:
             pos_tags, dep_html = linguistic_analysis_spacy(quick_input)
             st.session_state.dependency_html = dep_html
             
-            st.divider()
+            st.write("---")
 
             col_senti, col_cti = st.columns(2)
             with col_senti:
@@ -604,12 +585,12 @@ with tab_sentiment:
                 st.subheader("CTI Classification (Security Focus)")
                 st.dataframe(cti_df, use_container_width=True, hide_index=True)
 
-            st.divider()
+            st.write("---")
             with st.expander("Linguistic Analysis: POS Tagging & Dependency"):
-                st.markdown("#### Part-of-Speech (POS) Tagging and Dependency")
+                st.subheader("Part-of-Speech (POS) Tagging and Dependency")
                 st.dataframe(pd.DataFrame(pos_tags, columns=['Token', 'POS Tag', 'Dependency']), use_container_width=True)
                 
-                st.markdown("#### Dependency Tree Visualization")
+                st.subheader("Dependency Tree Visualization")
                 # Use st.components.v1.html for rendering spaCy's dependency visualization
                 components.html(st.session_state.dependency_html, height=300)
 
