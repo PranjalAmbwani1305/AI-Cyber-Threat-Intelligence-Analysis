@@ -4,7 +4,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from io import BytesIO
 import traceback
-from app.nlp_logic import Textract_pdf_text, process_cti_pdf, split_into_sentences, perform_clustering, build_cti_graph
+from nlp_logic import Textract_pdf_text, process_cti_pdf, split_into_sentences, perform_clustering, build_cti_graph
+
 
 
 # ======= PAGE CONFIG =======
