@@ -16,3 +16,4 @@ pdfplumber
 pytesseract
 Pillow
 openai
+pymupdf
