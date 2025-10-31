@@ -4,13 +4,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from io import BytesIO
 import traceback
-
-# ------------------- IMPORT CORE NLP LOGIC -------------------
-from app.nlp_logic import (
-    extract_pdf_text,
-    split_into_sentences,
-    process_cti_pdf
-)
+from nlp_logic import extract_pdf_text, split_into_sentences, process_cti_pdf
 
 # ------------------- STREAMLIT CONFIG -------------------
 st.set_page_config(page_title="AI CTI Intelligence Dashboard", layout="wide")
