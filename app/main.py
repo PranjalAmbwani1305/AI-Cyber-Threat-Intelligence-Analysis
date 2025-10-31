@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import igraph as ig
-from app import nlp_logic
+import nlp_logic
 
 # ------------------ STREAMLIT CONFIG ------------------
 st.set_page_config(
