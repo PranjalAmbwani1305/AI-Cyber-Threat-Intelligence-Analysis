@@ -19,3 +19,4 @@ openai
 pymupdf
 pyvis
 networkx
+en-core-web-sm
