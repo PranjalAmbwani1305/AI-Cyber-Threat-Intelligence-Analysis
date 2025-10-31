@@ -1,29 +1,97 @@
 import pandas as pd
-from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
+import io
+import nltk
+import networkx as nx
+from pyvis.network import Network
+from transformers import pipeline
+import pdfplumber
 
-MODEL_NAME = "CyberPeace-Institute/SecureBERT-NER"
+# Ensure NLTK sentence tokenizer is ready
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt")
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME)
-ner_pipeline = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+# -------------------------
+# TEXT EXTRACTION
+# -------------------------
+def extract_text(file):
+    """Extract text from PDF, CSV, or TXT file."""
+    if file.name.endswith(".csv"):
+        try:
+            df = pd.read_csv(file)
+            text = " ".join(df.astype(str).fillna("").values.flatten())
+        except Exception:
+            text = ""
+    elif file.name.endswith(".pdf"):
+        text = ""
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+    elif file.name.endswith(".txt"):
+        text = file.read().decode("utf-8", errors="ignore")
+    else:
+        text = ""
+    return text.strip()
 
-sentiment_pipeline = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
-topic_pipeline = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# -------------------------
+# NLP PIPELINES
+# -------------------------
+def load_nlp_models():
+    """Load NER and Sentiment models."""
+    ner = pipeline("ner", grouped_entities=True)
+    sentiment = pipeline("sentiment-analysis")
+    return ner, sentiment
 
-def extract_entities(text):
-    """Extracts cybersecurity entities using SecureBERT."""
-    entities = ner_pipeline(text)
-    df = pd.DataFrame(entities).rename(columns={"word": "Entity", "entity_group": "Type"})
-    df["Score"] = df["score"].round(3)
-    return df[["Entity", "Type", "Score"]]
+def analyze_text(text, ner, sentiment):
+    """Run NLP pipelines on extracted text."""
+    if not text.strip():
+        raise ValueError("Empty text content.")
+    
+    sentences = nltk.sent_tokenize(text)
+    entities = []
+    for sent in sentences[:50]:
+        entities.extend(ner(sent))
 
-def analyze_sentiment(text):
-    """Performs sentiment analysis on the input text."""
-    result = sentiment_pipeline(text[:512])[0]
-    return {"label": result["label"], "score": round(result["score"], 3)}
+    sentiments = sentiment(sentences[:50])
+    sentiment_df = pd.DataFrame(sentiments)
+    sentiment_summary = sentiment_df["label"].value_counts().reset_index()
+    sentiment_summary.columns = ["Sentiment", "Count"]
 
-def topic_modeling(text):
-    """Performs zero-shot topic classification."""
-    candidate_labels = ["malware", "phishing", "APT", "vulnerability", "data breach", "threat actor"]
-    result = topic_pipeline(text[:512], candidate_labels)
-    return {"topic": result["labels"][0], "confidence": round(result["scores"][0], 3)}
+    return entities, sentiment_summary
+
+# -------------------------
+# KNOWLEDGE GRAPH BUILDER
+# -------------------------
+def build_knowledge_graph(entities):
+    """Create a CTI-oriented knowledge graph using PyVis."""
+    G = nx.Graph()
+
+    for ent in entities:
+        group = ent.get("entity_group", "Unknown")
+        word = ent.get("word", "")
+        if not word.strip():
+            continue
+
+        # Different node colors for CTI entity types
+        color_map = {
+            "ORG": "#00b4d8",
+            "PERSON": "#ffb703",
+            "LOC": "#8ecae6",
+            "MALWARE": "#d62828",
+            "CVE": "#90be6d",
+            "TOOL": "#219ebc",
+            "Unknown": "#adb5bd"
+        }
+        color = color_map.get(group, "#adb5bd")
+
+        G.add_node(word, label=word, color=color)
+        G.add_node(group, label=group, color="#023047")
+        G.add_edge(group, word)
+
+    net = Network(height="600px", width="100%", bgcolor="#0e1117", font_color="white")
+    net.from_nx(G)
+    net.toggle_physics(True)
+    return net.generate_html()
