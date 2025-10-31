@@ -1,56 +1,80 @@
 import pandas as pd
-from pyvis.network import Network
+import nltk
+import io
 import networkx as nx
-import tempfile, os
+from pyvis.network import Network
+from transformers import pipeline
 
-def process_cti_data():
-    """
-    Placeholder for real CTI NLP logic.
-    Replace this with integration to your models or preprocessing pipeline.
-    Should return a DataFrame with columns: Entity, Type, Score.
-    """
-    data = {
-        "Entity": ["APT29", "Phishing", "CVE-2025-10001", "Exchange Server", "10.0.0.15"],
-        "Type": ["APT", "Attack", "Vulnerability", "Tool", "IP"],
-        "Score": [0.98, 0.95, 0.93, 0.89, 0.87]
-    }
-    df = pd.DataFrame(data)
-    return df
+# Ensure NLTK tokenizer is available
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt")
 
+def split_into_sentences(text):
+    return nltk.sent_tokenize(text)
 
-def build_cti_graph_pyvis():
-    """
-    Builds an interactive Cyber Threat Intelligence graph using Pyvis.
-    """
-    df = process_cti_data()
-    if df.empty:
-        return None
+# Load NLP pipelines
+ner_pipeline = pipeline("ner", grouped_entities=True)
+sentiment_pipeline = pipeline("sentiment-analysis")
 
-    G = nx.DiGraph()
+def extract_text(file):
+    """Extract text from CSV, TXT, or PDF."""
+    if file.name.endswith(".csv"):
+        df = pd.read_csv(file)
+        text = " ".join(df.astype(str).fillna("").values.flatten())
+    elif file.name.endswith(".txt"):
+        text = file.read().decode("utf-8", errors="ignore")
+    elif file.name.endswith(".pdf"):
+        import PyPDF2
+        reader = PyPDF2.PdfReader(file)
+        text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    else:
+        text = ""
+    return text
 
-    color_map = {
-        "Attack": "#1f77b4",
-        "Tool": "#2ca02c",
-        "APT": "#d62728",
-        "Vulnerability": "#ff7f0e",
-        "IP": "#17becf",
-        "Domain": "#9467bd",
-    }
+def build_knowledge_graph(entities):
+    """Create an interactive knowledge graph using PyVis."""
+    G = nx.Graph()
 
-    for _, row in df.iterrows():
-        ent, typ = row["Entity"], row["Type"]
-        G.add_node(ent, color=color_map.get(typ, "#9fa8da"), title=f"{ent} ({typ})")
+    for ent in entities:
+        entity_type = ent.get("entity_group", "Unknown")
+        word = ent.get("word", "")
+        if not word.strip():
+            continue
+        G.add_node(entity_type, color="#007ACC", shape="ellipse")
+        G.add_node(word, color="#00B4D8", shape="dot")
+        G.add_edge(entity_type, word)
 
-    for i in range(len(df) - 1):
-        G.add_edge(df.iloc[i]["Entity"], df.iloc[i + 1]["Entity"], title="related_to")
-
-    net = Network(height="650px", bgcolor="#0e1117", font_color="white", directed=True)
+    net = Network(height="600px", width="100%", bgcolor="#0e1117", font_color="white")
     net.from_nx(G)
-    net.repulsion(node_distance=180, spring_length=200)
+    net.toggle_physics(True)
+    return net.generate_html()
 
-    temp_path = os.path.join(tempfile.gettempdir(), "cti_graph.html")
-    net.save_graph(temp_path)
+def process_cti_data(uploaded_file):
+    """Main NLP processing pipeline."""
+    text = extract_text(uploaded_file)
+    if not text.strip():
+        raise ValueError("No readable text found in the uploaded file.")
 
-    with open(temp_path, "r", encoding="utf-8") as f:
-        html = f.read()
-    return html
+    sentences = split_into_sentences(text)
+
+    # Named Entity Recognition
+    entities = []
+    for sent in sentences[:50]:  # limited for performance
+        entities.extend(ner_pipeline(sent))
+
+    # Sentiment Analysis
+    sentiments = sentiment_pipeline(sentences[:50])
+    sentiment_df = pd.DataFrame(sentiments)
+    sentiment_summary = sentiment_df["label"].value_counts().reset_index()
+    sentiment_summary.columns = ["Sentiment", "Count"]
+
+    # Knowledge Graph
+    graph_html = build_knowledge_graph(entities)
+
+    return {
+        "entities": pd.DataFrame(entities),
+        "sentiment_summary": sentiment_summary,
+        "graph_html": graph_html
+    }
