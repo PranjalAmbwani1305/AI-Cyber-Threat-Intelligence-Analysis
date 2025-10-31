@@ -18,31 +18,55 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+NLP_ENABLED = False
 try:
     nlp = spacy.load("en_core_web_sm")
-except:
-    st.error("SpaCy model 'en_core_web_sm' failed to load. Linguistic analysis will be disabled.")
+    NLP_ENABLED = True
+except Exception as e:
     nlp = None
+    st.error(f"SpaCy model 'en_core_web_sm' failed to load. Linguistic analysis will be disabled. ({e.__class__.__name__})")
+    
+    with st.expander("Tools: How to Fix the SpaCy Model Error in Cloud Environments (e.g., Streamlit Cloud)"):
+        st.markdown(
+            """
+            This usually happens because the large language model data is not installed alongside the library.
+            To fix this, you must ensure your environment's dependency file (`requirements.txt`) contains **both** `spacy` and the model name:
+
+            ```text
+            streamlit
+            pandas
+            numpy
+            igraph
+            matplotlib
+            spacy
+            en-core-web-sm
+            ```
+
+            **Action Required:** If you are running this in Streamlit Cloud, please update your `requirements.txt` file to include `en-core-web-sm` and redeploy the app.
+            """
+        )
 
 NER_MODEL_LOADED = True
 
 def mock_ner_pipeline(text):
+    # Updated mock results to better simulate log data entities (Firewall, User, Alert)
     mock_results = [
-        {'word': 'APT29', 'entity_group': 'THREAT_ACTOR', 'score': 0.9921},
-        {'word': 'TrickBot', 'entity_group': 'MALWARE', 'score': 0.9785},
+        {'word': 'Firewall', 'entity_group': 'DEVICE', 'score': 0.9990},
+        {'word': 'blocks', 'entity_group': 'ACTION', 'score': 0.9500},
+        {'word': 'Destination IP', 'entity_group': 'IP', 'score': 0.9991},
+        {'word': 'Source IP', 'entity_group': 'IP', 'score': 0.9991},
+        {'word': 'triggers', 'entity_group': 'ACTION', 'score': 0.9400},
+        {'word': 'User', 'entity_group': 'IDTY', 'score': 0.9800},
+        {'word': 'Protocol', 'entity_group': 'PROTOCOL', 'score': 0.9991},
+        {'word': 'uses', 'entity_group': 'ACTION', 'score': 0.9600},
+        {'word': 'Alert', 'entity_group': 'ALERT', 'score': 0.9700},
         {'word': '192.168.1.1', 'entity_group': 'IP', 'score': 0.9991},
-        {'word': 'spear phishing', 'entity_group': 'ACT', 'score': 0.9540},
-        {'word': 'QakBot', 'entity_group': 'MALWARE', 'score': 0.9810},
-        {'word': 'CVE-2024-4228', 'entity_group': 'VULID', 'score': 0.9950},
         {'word': 'LockBit', 'entity_group': 'RANSOMWARE', 'score': 0.9632},
-        {'word': 'APT-29', 'entity_group': 'THREAT_ACTOR', 'score': 0.9800},
-        {'word': 'phishing', 'entity_group': 'ACT', 'score': 0.9300},
-        {'word': 'user_a', 'entity_group': 'IDTY', 'score': 0.8800},
-        {'word': 'C:\\temp\\mal.exe', 'entity_group': 'FILE', 'score': 0.9600},
     ]
     return mock_results
 
 def extract_pdf_text_robust(pdf_file):
+    # This remains the same as it mocks CTI data extraction for PDF mode
     mock_long_text = "The initial access was confirmed as spear phishing. APT-29 utilized this tactic to deliver the TrickBot malware. The malware subsequently connected to a command and control server at 192.168.1.1. The campaign closely resembles activity associated with LockBit ransomware operations. We found evidence of a vulnerability, CVE-2024-4228, being exploited. Further analysis is required on the QakBot loader used in the secondary stage." * 5
     return mock_long_text
 
@@ -72,7 +96,6 @@ def build_cti_knowledge_graph_igraph(df_entities):
     name_to_original_label = {}
     unique_vertex_names = []
     
-    # Ensure entities are unique and cleaned for graph nodes
     for ent, lab in zip(vertex_names, labels):
         clean_ent = ent.replace('\n', ' ').strip()
         if clean_ent and clean_ent not in name_to_original_label:
@@ -85,22 +108,28 @@ def build_cti_knowledge_graph_igraph(df_entities):
     G.vs["node_type"] = [name_to_original_label[name] for name in G.vs["name"]]
     G.vs["label"] = G.vs["name"]
     
-    # Define a clear and distinct color map for CTI types
+    # Define a color map optimized for visual clarity, differentiating CTI (red/green) from LOG (neutral/gray/blue)
     color_map = {
-        'THREAT_ACTOR': '#E31A1C',   # Red
-        'APT': '#E31A1C',           # Red
-        'MALWARE': '#33A02C',        # Green
-        'RANSOMWARE': '#1F78B4',     # Blue
-        'IP': '#FF7F00',             # Orange
-        'DOMAIN': '#B2DF8A',         # Light Green
-        'URL': '#B2DF8A',            # Light Green
-        'VULID': '#CAB2D6',          # Lavender
-        'CVE': '#CAB2D6',            # Lavender
+        'THREAT_ACTOR': '#E31A1C',   
+        'APT': '#E31A1C',           
+        'MALWARE': '#33A02C',        
+        'RANSOMWARE': '#1F78B4',     
+        'VULID': '#CAB2D6',          
+        'CVE': '#CAB2D6',            
+        
+        # Log-Specific/Neutral Types for CSV visualization
+        'IP': '#A6D96A',             # Lighter Green
+        'DOMAIN': '#A6D96A',         
+        'URL': '#A6D96A',            
         'ACT': '#FDBF6F',            # Yellow/Orange
-        'IDTY': '#FFD92F',           # Yellow
-        'FILE': '#FB9A99',           # Pink
-        'TOOL': '#6A3D9A',           # Purple
-        'OS': '#CCCCCC',             # Grey
+        'IDTY': '#FFD92F',           # Yellow (User)
+        'FILE': '#FB9A99',           
+        'TOOL': '#6A3D9A',           
+        'DEVICE': '#9C9C9C',         # Grey for hardware/source
+        'PROTOCOL': '#80B1D3',       # Light Blue
+        'ACTION': '#9C9C9C',         # Grey for actions/verbs
+        'ALERT': '#E5C494',          # Tan for event/alert
+        'OS': '#CCCCCC',             
         'MISC': '#CCCCCC'
     }
     G.vs["color"] = [color_map.get(lab, '#CCCCCC') for lab in G.vs["node_type"]]
@@ -108,12 +137,10 @@ def build_cti_knowledge_graph_igraph(df_entities):
     edges_to_add = []
     edge_relations = []
     
-    # Use the original (non-unique) entity sequence to infer relationships
     for i in range(len(vertex_names) - 1):
         e1, l1 = vertex_names[i].replace('\n', ' ').strip(), labels[i]
         e2, l2 = vertex_names[i+1].replace('\n', ' ').strip(), labels[i+1]
         
-        # Skip if either entity is not in the final unique node list
         if e1 not in G.vs["name"] or e2 not in G.vs["name"]:
             continue
             
@@ -123,26 +150,31 @@ def build_cti_knowledge_graph_igraph(df_entities):
         except:
             continue
 
-        relation = "related_to" # Default relation
+        relation = "related_to" 
 
-        # --- CTI Rule-Based Edge Assignment ---
-        if l1 in ["THREAT_ACTOR", "APT"] and l2 in ["MALWARE", "RANSOMWARE"]: 
+        # --- LOG-SPECIFIC RULE-BASED EDGE ASSIGNMENT (Matches the user's image logic) ---
+        
+        if l1 == "DEVICE" and l2 == "ACTION" and e2.lower() in ["blocks", "drops", "denies"]: 
+             relation = e2.lower()
+        elif l1 == "ACTION" and l2 == "IP" and e1.lower() in ["blocks", "drops", "denies"]:
+             relation = "blocks"
+        elif l1 == "IP" and l2 == "ACTION" and e2.lower() in ["uses", "connects_to"]:
+             relation = e2.lower()
+        elif l1 in ["IP", "IDTY", "DEVICE"] and l2 in ["ACTION", "ALERT"]:
+             relation = "triggers"
+        elif l1 in ["IP", "IDTY"] and l2 in ["PROTOCOL", "ACTION"]:
+             relation = "uses"
+        
+        # --- CTI RULE-BASED EDGE ASSIGNMENT (Kept for completeness) ---
+        elif l1 in ["THREAT_ACTOR", "APT"] and l2 in ["MALWARE", "RANSOMWARE"]: 
             relation = "uses"
         elif l1 in ["MALWARE", "RANSOMWARE"] and l2 in ["IP", "DOMAIN", "URL"]: 
             relation = "connects_to"
-        elif l1 in ["MALWARE", "RANSOMWARE"] and l2 in ["FILE", "HASH"]:
-            relation = "drops"
-        elif l1 in ["IP", "DOMAIN", "URL"] and l2 in ["MALWARE", "RANSOMWARE"]:
-            relation = "hosts"
-        elif l1 == "ACT" and l2 in ["MALWARE", "RANSOMWARE", "TOOL"]: 
-            relation = "implements"
-        elif l1 in ["VULID", "CVE"] and l2 in ["OS", "TOOL"]:
-            relation = "affects"
-        elif l1 in ["THREAT_ACTOR", "APT"] and l2 == "ACT":
-            relation = "performs"
         
-        edges_to_add.append((id1, id2))
-        edge_relations.append(relation)
+        # Avoid duplicate edges for sequential connections
+        if (id1, id2) not in edges_to_add:
+            edges_to_add.append((id1, id2))
+            edge_relations.append(relation)
 
     G.add_edges(edges_to_add)
     G.es["label"] = edge_relations
@@ -230,6 +262,7 @@ def process_structured_data(file_object):
     full_text = '\n'.join(df['combined_text'].tolist())
     
     chunks = chunk_text_robust(full_text)
+    # The mock_ner_pipeline now includes log-specific entities
     results = [r for chunk in chunks for r in mock_ner_pipeline(chunk)]
     df_results = pd.DataFrame(results)
     
@@ -325,7 +358,7 @@ def build_mitre_mapping(df_entities):
     return pd.DataFrame(mitre_data).drop_duplicates()
 
 def linguistic_analysis_spacy(text):
-    if nlp is None:
+    if not NLP_ENABLED:
         return [], "<p>SpaCy model not loaded.</p>"
     if not text.strip():
         return [], "<p>Please enter text for analysis.</p>"
@@ -339,7 +372,7 @@ def linguistic_analysis_spacy(text):
 
 st.set_page_config(
     page_title="CTI Report Deconstruction",
-    page_icon="🔎",
+    page_icon=" ", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -353,17 +386,21 @@ if 'processed' not in st.session_state:
     st.session_state.input_mode = "Unstructured (PDF)"
     st.session_state.dependency_html = ""
     st.session_state.status_message = ""
-    st.session_state.upload_key = 0 # Key for file uploader reset
+    st.session_state.upload_key = 0 
 
-# Main Application Title (Matching image 8a74ca.png)
-st.title("Cyber Threat Intelligence (CTI) Knowledge Graph Analyzer")
-st.markdown("Upload a CTI report (PDF) to extract entities and visualize relationships.")
+# --- Sidebar for Input, Settings, and Export ---
+with st.sidebar:
+    st.header("1 Data Ingestion")
+    
+    # 1. Input Mode Selector (Enabled)
+    st.radio(
+        "Current Input Mode:",
+        ["Unstructured (PDF)", "Structured (Log/CSV/XLSX)"],
+        key='input_mode',
+        help="Select the file type you intend to upload. This changes the file selector."
+    )
 
-# --- 1. Top Row for Input, Button, and Status (Matching image 8a74ca.png) ---
-col_file, col_button, col_status = st.columns([3, 1, 2])
-
-with col_file:
-    # Set up input mode logic outside the column block to share logic
+    # Logic to determine file uploader properties based on current input mode
     if st.session_state.input_mode == "Unstructured (PDF)":
         allowed_types = ["pdf"]
         upload_label = "Upload CTI Report (PDF)"
@@ -371,81 +408,28 @@ with col_file:
         allowed_types = ["csv", "xlsx", "log"]
         upload_label = "Upload Log/Data File (CSV/XLSX/LOG)"
 
-    # Use a dummy variable for file state update
+    # 2. File Uploader (Moved to sidebar)
     uploaded_file = st.file_uploader(
         upload_label,
         type=allowed_types,
-        key=f"file_uploader_{st.session_state.upload_key}"
+        key=f"file_uploader_{st.session_state.input_mode}" 
     )
 
-with col_button:
-    # Use a primary button for the main action
-    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True) 
+    # 3. Process Button
     process_button = st.button("Process Report", type="primary", use_container_width=True)
 
-with col_status:
-    st.markdown("Status") # Label matching Gradio style
-    status_container = st.container()
-    if st.session_state.status_message:
-        status_container.text_area(label="Status Box", value=st.session_state.status_message, height=100, label_visibility="collapsed")
-    else:
-         status_container.text_area(label="Status Box", value="", height=100, label_visibility="collapsed")
-
-
-# --- Analysis Logic Triggered by Button ---
-if process_button:
-    st.session_state.status_message = "" # Clear previous status
-    if uploaded_file is not None:
-        try:
-            with st.spinner(f"Running Analysis on {uploaded_file.name}..."):
-                if uploaded_file.name.lower().endswith('.pdf'):
-                    st.session_state.input_mode = "Unstructured (PDF)"
-                    df, G, p_time, structural_df = run_full_pipeline(uploaded_file)
-                else:
-                    st.session_state.input_mode = "Structured (Log/CSV/XLSX)"
-                    df, G, p_time, structural_df = process_structured_data(uploaded_file)
-                    
-                st.session_state.entity_df = df
-                st.session_state.structural_df = structural_df
-                st.session_state.graph = G
-                st.session_state.processing_time = p_time
-                st.session_state.processed = True
-            
-            st.session_state.status_message = f"Analysis Complete! Found {len(df)} unique entities in {p_time:.2f}s."
-            
-            # Re-run to update status area immediately
-            st.rerun() 
-            
-        except ValueError as e:
-            st.session_state.status_message = f"Processing Error: {e}"
-            st.session_state.processed = False
-            st.rerun()
-        except Exception as e:
-            st.session_state.status_message = f"An unexpected error occurred: {e}"
-            st.session_state.processed = False
-            st.rerun()
-    else:
-        st.session_state.status_message = "Please upload a file to start the analysis."
-        st.rerun()
-
-# --- Horizontal Rule/Separator (Matching Gradio style) ---
-st.markdown("---") 
-
-# --- Sidebar for Export and Settings ---
-with st.sidebar:
-    st.header("Settings")
-    
-    # Allow switching input mode without re-uploading
-    st.radio(
-        "Current Input Mode:",
-        ["Unstructured (PDF)", "Structured (Log/CSV/XLSX)"],
-        key='input_mode',
-        disabled=True,
-        help="This mode is set automatically based on the last processed file type."
-    )
-
     st.markdown("---")
-    st.header("Output & Export")
+    st.header("Status")
+    # 4. Status Box
+    st.text_area(
+        label="Analysis Status",
+        value=st.session_state.status_message if st.session_state.status_message else "",
+        height=100,
+        disabled=True
+    )
+    st.markdown("---")
+    
+    st.header("2 Output & Export")
     
     if st.session_state.processed and not st.session_state.entity_df.empty:
         export_data = {
@@ -473,21 +457,54 @@ with st.sidebar:
         st.caption("Please run analysis pipeline first.")
 
 
+# Main Application Title
+st.title("Cyber Threat Intelligence (CTI) Knowledge Graph Analyzer")
+st.markdown("Upload a CTI report (PDF) or security logs (CSV/XLSX) in the sidebar to extract entities and visualize relationships.")
+
+
+# --- Analysis Logic Triggered by Button ---
+if process_button:
+    st.session_state.status_message = "" 
+    if uploaded_file is not None:
+        try:
+            with st.spinner(f"Running Analysis on {uploaded_file.name}..."):
+                # Determine mode based on uploaded file extension (overrides sidebar setting for processing)
+                filename_lower = uploaded_file.name.lower()
+                if filename_lower.endswith('.pdf'):
+                    st.session_state.input_mode = "Unstructured (PDF)"
+                    df, G, p_time, structural_df = run_full_pipeline(uploaded_file)
+                elif filename_lower.endswith(('.csv', '.xlsx', '.log')):
+                    st.session_state.input_mode = "Structured (Log/CSV/XLSX)"
+                    df, G, p_time, structural_df = process_structured_data(uploaded_file)
+                else:
+                    raise ValueError("Unsupported file type detected.")
+                    
+                st.session_state.entity_df = df
+                st.session_state.structural_df = structural_df
+                st.session_state.graph = G
+                st.session_state.processing_time = p_time
+                st.session_state.processed = True
+            
+            st.session_state.status_message = f"Analysis Complete! Found {len(df)} unique entities in {p_time:.2f}s."
+            
+            # Re-run to update status area immediately
+            st.rerun() 
+            
+        except ValueError as e:
+            st.session_state.status_message = f"Processing Error: {e}"
+            st.session_state.processed = False
+            st.rerun()
+        except Exception as e:
+            st.session_state.status_message = f"An unexpected error occurred: {e}"
+            st.session_state.processed = False
+            st.rerun()
+    else:
+        st.session_state.status_message = "Please upload a file to start the analysis."
+        st.rerun()
+
 # --- Main Content Tabs ---
 entity_count = len(st.session_state.entity_df)
 event_count = st.session_state.structural_df.loc[st.session_state.structural_df['Log Field'] == 'Total Event Count', 'Present in File'].iloc[0] if not st.session_state.structural_df.empty and 'Total Event Count' in st.session_state.structural_df['Log Field'].values else "---"
-
-# Moved metrics below the input panel for better flow
-# st.markdown("---")
-# col1, col2, col3 = st.columns(3)
-# with col1:
-#     st.info(f"**Total Unique CTI Entities**\n# {entity_count}")
-# with col2:
-#     st.info(f"**Total Events Analyzed**\n# {event_count}")
-# with col3:
-#     st.info(f"**Processing Time (s)**\n# {f'~{st.session_state.processing_time:.1f}s' if st.session_state.processed else '---'}")
-# st.markdown("---")
-
 
 tab_graph, tab_structural, tab_sentiment = st.tabs([
     "Knowledge Graph & Entities", 
@@ -499,7 +516,7 @@ with tab_graph:
     st.markdown("### Step 1: Extracted Entities (NER Results)")
     
     if not st.session_state.processed:
-        st.info("Upload a file above and click 'Process Report' to populate this analysis.")
+        st.info("Upload a file in the sidebar and click 'Process Report' to populate this analysis.")
     else:
         st.markdown(f"**{entity_count}** unique entities identified and normalized by the pipeline.")
         
@@ -549,9 +566,9 @@ with tab_structural:
     st.markdown("Analyze log files (CSV, XLSX) to quickly assess **data quality**, **field presence**, and **completeness** before deeper analysis.")
 
     if st.session_state.input_mode == "Unstructured (PDF)":
-        st.warning("Structural Analysis is only available for **Structured Inputs** (CSV/XLSX/LOG). Please switch the Input Mode (by uploading a non-PDF file).")
+        st.warning("Structural Analysis is only available for **Structured Inputs** (CSV/XLSX/LOG).")
     elif not st.session_state.processed:
-        st.info("Upload a structured log file (CSV, XLSX, or LOG) above and run the analysis to populate this tab.")
+        st.info("Upload a structured log file (CSV, XLSX, or LOG) in the sidebar and run the analysis to populate this tab.")
     else:
         st.dataframe(
             st.session_state.structural_df,
