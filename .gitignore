@@ -1,0 +1,56 @@
+Python virtual environment
+
+venv/
+.venv
+.env
+.env.
+
+Python bytecode and cache
+
+pycache/
+*.pyc
+*.pyo
+*.pyd
+
+Jupyter Notebook checkpoints
+
+.ipynb_checkpoints/
+
+Gradio cache
+
+.gradio_cache/
+
+OS-specific files
+
+.DS_Store
+Thumbs.db
+
+Build/distribution artifacts
+
+build/
+dist/
+*.egg-info/
+*.egg
+sdist/
+wheelhouse/
+
+Logs and temporary files
+
+*.log
+*.tmp
+*.swp
+*.swo
+
+IDE config files
+
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+Test outputs
+
+htmlcov/
+.tox/
+.pytest_cache/
+.coverage
